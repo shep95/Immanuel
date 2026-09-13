@@ -66,7 +66,19 @@ async def _run() -> None:
 
         bot = create_bot(db, engine, config, publish_queue=publish_queue,
                          forge=forge, scout=scout, hack=hack)
-        tasks.append(asyncio.create_task(bot.start(config.discord_token), name="discord"))
+
+        async def _run_bot() -> None:
+            try:
+                await bot.start(config.discord_token)
+            except Exception as exc:  # keep API + engine alive if discord fails
+                name = type(exc).__name__
+                print(f"[immanuel] discord bot stopped: {name}: {exc}")
+                if "PrivilegedIntents" in name:
+                    print("[immanuel] -> enable 'Message Content Intent' (and "
+                          "'Server Members Intent') in the Discord Developer "
+                          "Portal, or set DISCORD_MESSAGE_CONTENT=false.")
+
+        tasks.append(asyncio.create_task(_run_bot(), name="discord"))
     else:
         print("[immanuel] DISCORD_TOKEN not set — running API + engine only.")
 

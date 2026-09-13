@@ -42,6 +42,10 @@ def _float(name: str, default: float) -> float:
 class Config:
     # Discord
     discord_token: str = ""
+    # Privileged intent — OFF by default so the bot boots without a portal toggle.
+    # Enable only after turning on "Message Content Intent" in the Discord dev
+    # portal; it lets users paste their /hack key straight into the channel.
+    discord_message_content: bool = False
     discord_guild_id: int | None = None
     master_admin_ids: set[int] = field(default_factory=set)
 
@@ -158,6 +162,7 @@ class Config:
         guild = os.getenv("DISCORD_GUILD_ID", "").strip()
         return cls(
             discord_token=os.getenv("DISCORD_TOKEN", "").strip(),
+            discord_message_content=_bool("DISCORD_MESSAGE_CONTENT", False),
             discord_guild_id=int(guild) if guild.isdigit() else None,
             master_admin_ids={int(x) for x in _csv("MASTER_ADMIN_IDS") if x.isdigit()},
             database_path=os.getenv("DATABASE_PATH", "./data/immanuel.db").strip(),

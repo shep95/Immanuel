@@ -33,7 +33,9 @@ def create_bot(db: Database, engine: Engine, config: Config,
                hack=None) -> commands.Bot:
     intents = discord.Intents.default()
     intents.members = True  # required for join/leave logging (enable in dev portal)
-    intents.message_content = True  # read pasted BYO api keys in /hack channels
+    # Privileged: only request it when explicitly enabled, so a deployment that
+    # hasn't toggled "Message Content Intent" in the dev portal still boots.
+    intents.message_content = bool(getattr(config, "discord_message_content", False))
 
     bot = commands.Bot(command_prefix="!", intents=intents)
     tree = bot.tree
@@ -558,18 +560,49 @@ def create_bot(db: Database, engine: Engine, config: Config,
             "user_id": interaction.user.id, "target": target,
             "instruction": instruction, "engine": engine}
         model_hint = config.strix_llm or "openrouter/z-ai/glm-5.3"
+        if getattr(config, "discord_message_content", False):
+            how = (f"**paste your key here** in one of these forms:\n"
+                   f"• `your-api-key` (uses model `{model_hint}`)\n"
+                   f"• `provider/model | your-api-key` (choose the model)\n\n"
+                   f"…or type **recon** to run the keyless deterministic engine.")
+        else:
+            how = (f"run **`/hackkey`** to set your key (private/ephemeral), then "
+                   f"**`/hack {target}`** again.\n"
+                   f"default model is `{model_hint}` unless you pass one to /hackkey.\n\n"
+                   f"…or run **`/hack {target} engine:recon`** for the keyless engine.")
         await chan.send(
             f"🛡️ **/hack `{target}`** — bring your own LLM key to run the Strix AI "
-            f"agents.\n\n**paste your key here** in one of these forms:\n"
-            f"• `your-api-key` (uses model `{model_hint}`)\n"
-            f"• `provider/model | your-api-key` (choose the model)\n\n"
-            f"…or type **recon** to run the keyless deterministic engine instead.\n"
-            f"_your key is used only for your runs, never stored to disk, and I'll "
-            f"delete the message after reading it._")
+            f"agents.\n\n{how}\n"
+            f"_your key is used only for your runs, never stored to disk._")
+
+    @tree.command(
+        name="hackkey",
+        description="Set your own LLM key for /hack (private, ephemeral, never stored to disk).")
+    @app_commands.describe(
+        api_key="your LLM api key (used only for your runs)",
+        model="optional model, e.g. openrouter/z-ai/glm-5.3")
+    async def hackkey_cmd(interaction: discord.Interaction, api_key: str,
+                          model: str | None = None) -> None:
+        if hack is None or not config.enable_hack:
+            await interaction.response.send_message(
+                "⛔ /hack is disabled for this deployment.", ephemeral=True)
+            return
+        key = (api_key or "").strip()
+        if not key:
+            await interaction.response.send_message(
+                "❌ paste your api key.", ephemeral=True)
+            return
+        mdl = (model or config.strix_llm or "openrouter/z-ai/glm-5.3").strip()
+        bot._hack_keys[interaction.user.id] = (mdl, key)
+        await interaction.response.send_message(
+            f"✅ key stored in memory for this session (model `{mdl}`). "
+            f"it's never written to disk. now run `/hack <target>`.", ephemeral=True)
 
     @bot.event
     async def on_message(message: discord.Message) -> None:
-        # capture a bring-your-own-key reply in a private hack channel
+        # capture a bring-your-own-key reply in a private hack channel (only
+        # meaningful when the Message Content Intent is enabled; otherwise
+        # message.content is empty and this simply passes through)
         pending = bot._hack_pending.get(getattr(message.channel, "id", 0))
         if (pending and not message.author.bot
                 and message.author.id == pending["user_id"] and hack is not None):
