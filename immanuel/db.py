@@ -380,6 +380,12 @@ class Database:
                 ).fetchone()[0]
             return self._conn.execute("SELECT COUNT(*) FROM sources").fetchone()[0]
 
+    def count_domains(self) -> int:
+        with self._lock:
+            return self._conn.execute(
+                "SELECT COUNT(DISTINCT domain) FROM sources WHERE domain IS NOT NULL"
+            ).fetchone()[0]
+
     # -------------------------------------------------------------- api_keys
     def store_api_key(self, key_prefix: str, key_hash: str, owner: str | None,
                       scopes: str = "read") -> None:

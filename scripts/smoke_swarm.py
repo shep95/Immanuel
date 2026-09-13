@@ -51,7 +51,7 @@ async def main():
             database_path=":memory:", crawler_mode="swarm",
             seed_urls=[f"{base}/"], max_agents=20, crawl_delay_seconds=0,
             cycle_interval_seconds=1, recrawl_interval_seconds=9999,
-            publish_to_discord=False,
+            publish_to_discord=False, auto_discover=False,
         )
         db = Database(cfg.database_path)
         eng = Engine(db, cfg)

@@ -75,6 +75,7 @@ async def main():
             recrawl_interval_seconds=0,   # allow immediate re-crawl to detect updates
             num_crawlers=8,
             max_pages_per_cycle=10,
+            auto_discover=False,          # hermetic: only the local test server
         )
         db = Database(cfg.database_path)
         eng = Engine(db, cfg)

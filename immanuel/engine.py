@@ -54,7 +54,12 @@ class Engine:
     # ------------------------------------------------------------- seeding
     async def seed(self) -> int:
         added = 0
-        for url in self.config.seed_urls:
+        seeds = list(self.config.seed_urls)
+        if self.config.auto_discover:
+            # built-in firehose sources so it finds its own domains, zero-config
+            from .crawler.bootstrap import bootstrap_seeds
+            seeds = bootstrap_seeds() + seeds
+        for url in seeds:
             if self.db.add_source(url, kind="seed", domain=urlparse(url).netloc):
                 added += 1
             if self.config.enable_subdomain_probe:
@@ -120,6 +125,8 @@ class Engine:
             "by_category": self.db.counts_by_category(),
             "sources_total": self.db.count_sources(),
             "sources_active": self.db.count_sources("active"),
+            "domains_total": self.db.count_domains(),
+            "max_hops": self.config.max_hops,
             "stats": dict(self.stats),
         }
         if self.swarm is not None:

@@ -41,12 +41,19 @@ It's designed to be hosted on **Railway** as a single service.
 - **The algorithm** crawls public web sources 24/7 (politely, respecting `robots.txt`),
   extracts content from **any media type** (HTML, feeds, JSON, text, images/audio/video
   metadata), deduplicates it, and stores it with provenance.
-- **Crawler-agent swarm (default):** in `swarm` mode Immanuel spawns a **brand-new,
-  non-AI crawler-agent for every page/link it discovers** — each agent fetches its page,
-  then its discovered links spawn more agents, fanning out massively. It's bounded by
-  `MAX_AGENTS` (concurrent), a bounded frontier, and per-domain politeness so it goes fast
-  without exhausting the machine or hammering any host. (`CRAWLER_MODE=cycle` switches to a
-  fixed worker pool if you prefer steadier behavior.)
+- **Auto source discovery (zero-config):** with `AUTO_DISCOVER=on` (default) it starts from
+  a built-in set of link-rich public hubs and live feeds and **finds its own domains** — you
+  don't have to add anything. `/addsource` and `SEED_URLS` just add extras. Optionally
+  `ENABLE_CT_DISCOVERY=true` turns on a **Certificate-Transparency domain firehose** that
+  streams newly-seen domains from across the web, in batches.
+- **Crawler-agent swarm with 3-hop fan-out (default):** in `swarm` mode Immanuel spawns a
+  **brand-new, non-AI crawler-agent for every page/link it discovers** — each agent fetches
+  its page, then its discovered links spawn more agents. Fan-out is bounded by a **hop
+  depth** (`MAX_HOPS`, default 3): a domain is hop 0, its links hop 1, and so on — so it
+  batches the domains it finds and hops across the domains connected to those pages, up to 3
+  levels. Also bounded by `MAX_AGENTS`, a bounded frontier, and per-domain politeness so it
+  goes fast without exhausting the machine or hammering any host. (`CRAWLER_MODE=cycle`
+  switches to a fixed worker pool if you prefer steadier behavior.)
 - **Timestamps + versioning:** every capture is timestamped. When a page changes between
   crawls, Immanuel records a **new version** and shows **what was added/removed and when**
   (see `/recent_updates`, the `immanuel-updates` channel, and `GET /v1/versions`).
@@ -132,6 +139,25 @@ Formula: sustainable pages/sec ≈ `min(concurrent_agents, distinct_domains) / C
 With 200 agents across ≥200 domains at 2s delay ≈ **100 pages/sec ≈ 8.6M pages/day**.
 The swarm auto-scales agents up to `MAX_AGENTS` as it discovers pages; you don't tune
 per-cycle batch sizes in swarm mode.
+
+## Can it crawl "every domain in the world"?
+
+Honestly: **not from one container.** The public web is hundreds of millions of live
+domains and tens of billions of pages — that's Common-Crawl / search-engine territory
+(large clusters, petabytes of storage, months of crawling). Immanuel gives you the right
+**mechanism** for it — auto domain discovery (built-in firehose + optional CT-log stream),
+one crawler-agent per page, and bounded N-hop fan-out — but a single Railway box + SQLite
+will realistically track **thousands to low-millions of pages**, not the entire internet.
+
+To actually push toward web-scale you need the distributed setup from the design spec:
+- **Postgres** instead of SQLite (so many replicas share one dataset + one politeness
+  budget per host) — this is the current top roadmap item.
+- **Multiple Railway replicas / workers** all pulling from the shared frontier.
+- Object storage for raw content and a real search index.
+
+Turn `ENABLE_CT_DISCOVERY=on` and it *will* discover domains far faster than it can crawl
+them (they queue as sources) — so treat `MAX_HOPS`, `MAX_AGENTS`, and your infra as the
+real throttle. Want me to wire the Postgres + multi-replica backend? Say the word.
 
 ## Setup — Step by step
 

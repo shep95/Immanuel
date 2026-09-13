@@ -67,6 +67,14 @@ class Config:
     autostart_crawler: bool = False
     seed_urls: list[str] = field(default_factory=list)
 
+    # Auto source discovery (zero-config: it finds its own domains/sources)
+    auto_discover: bool = True          # load built-in firehose seeds on start
+    max_hops: int = 3                   # follow links up to N hops from each root
+    # Certificate-Transparency domain firehose (discovers domains across the web)
+    enable_ct_discovery: bool = False
+    ct_batch_size: int = 200            # domains pulled per CT poll
+    ct_poll_seconds: float = 120.0      # how often to pull a new domain batch
+
     # Discovery (subdomains / non-SEO)
     enable_subdomain_probe: bool = False
 
@@ -109,6 +117,11 @@ class Config:
             respect_robots=_bool("RESPECT_ROBOTS", True),
             autostart_crawler=_bool("AUTOSTART_CRAWLER", False),
             seed_urls=_csv("SEED_URLS"),
+            auto_discover=_bool("AUTO_DISCOVER", True),
+            max_hops=_int("MAX_HOPS", 3),
+            enable_ct_discovery=_bool("ENABLE_CT_DISCOVERY", False),
+            ct_batch_size=_int("CT_BATCH_SIZE", 200),
+            ct_poll_seconds=float(_int("CT_POLL_SECONDS", 120)),
             enable_subdomain_probe=_bool("ENABLE_SUBDOMAIN_PROBE", False),
             publish_to_discord=_bool("PUBLISH_TO_DISCORD", True),
             enable_wayback=_bool("ENABLE_WAYBACK", False),

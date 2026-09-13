@@ -141,6 +141,8 @@ def create_bot(db: Database, engine: Engine, config: Config,
             emb.add_field(name="Frontier", value=sw["frontier_size"], inline=True)
             emb.add_field(name="Agents spawned", value=sw["agents_spawned"], inline=True)
         emb.add_field(name="Sources", value=f'{snap["sources_active"]}/{snap["sources_total"]} active', inline=True)
+        emb.add_field(name="Domains", value=snap.get("domains_total", 0), inline=True)
+        emb.add_field(name="Max hops", value=snap.get("max_hops", "-"), inline=True)
         emb.add_field(name="Workers", value=snap["workers"], inline=True)
         emb.add_field(name="Versions/Updates",
                       value=f'{snap["versions_total"]}/{snap["updates_total"]}', inline=True)
