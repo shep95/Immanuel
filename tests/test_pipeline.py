@@ -38,11 +38,13 @@ async def test_process_stores_and_classifies(db):
 @pytest.mark.asyncio
 async def test_process_dedup(db):
     res = FetchResult("https://ex.com/p", "https://ex.com/p", 200, "text/html", HTML, True)
-    await process_url("https://ex.com/p", FakeFetcher(res), FakeRobots(), db)
+    out1 = await process_url("https://ex.com/p", FakeFetcher(res), FakeRobots(), db)
+    assert out1.is_new_page is True
     out2 = await process_url("https://ex.com/p", FakeFetcher(res), FakeRobots(), db)
     assert out2.stored is False
-    assert out2.reason == "duplicate"
-    assert db.count_items() == 1
+    assert out2.unchanged is True
+    assert db.count_items() == 1        # content-addressed: still one blob
+    assert db.count_versions() == 1     # unchanged -> no new version
 
 
 @pytest.mark.asyncio

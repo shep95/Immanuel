@@ -48,16 +48,24 @@ class Config:
 
     # Crawler
     user_agent: str = "ImmanuelBot/1.0 (+https://github.com/shep95/Immanuel)"
-    crawl_concurrency: int = 4
+    num_crawlers: int = 8               # parallel crawler workers
+    crawl_concurrency: int = 4          # legacy alias; num_crawlers wins if larger
     crawl_delay_seconds: float = 2.0
     max_pages_per_cycle: int = 25
     cycle_interval_seconds: float = 30.0
+    recrawl_interval_seconds: float = 3600.0  # revisit pages to detect updates
     max_links_per_page: int = 20
     request_timeout_seconds: float = 20.0
     max_content_bytes: int = 5_000_000
     respect_robots: bool = True
     autostart_crawler: bool = False
     seed_urls: list[str] = field(default_factory=list)
+
+    # Discovery (subdomains / non-SEO)
+    enable_subdomain_probe: bool = False
+
+    # Discord publishing (host data on your server)
+    publish_to_discord: bool = True
 
     # Wayback / timeline
     enable_wayback: bool = False
@@ -79,16 +87,20 @@ class Config:
                 "IMMANUEL_USER_AGENT",
                 "ImmanuelBot/1.0 (+https://github.com/shep95/Immanuel)",
             ).strip(),
+            num_crawlers=_int("NUM_CRAWLERS", 8),
             crawl_concurrency=_int("CRAWL_CONCURRENCY", 4),
             crawl_delay_seconds=float(_int("CRAWL_DELAY_SECONDS", 2)),
             max_pages_per_cycle=_int("MAX_PAGES_PER_CYCLE", 25),
             cycle_interval_seconds=float(_int("CYCLE_INTERVAL_SECONDS", 30)),
+            recrawl_interval_seconds=float(_int("RECRAWL_INTERVAL_SECONDS", 3600)),
             max_links_per_page=_int("MAX_LINKS_PER_PAGE", 20),
             request_timeout_seconds=float(_int("REQUEST_TIMEOUT_SECONDS", 20)),
             max_content_bytes=_int("MAX_CONTENT_BYTES", 5_000_000),
             respect_robots=_bool("RESPECT_ROBOTS", True),
             autostart_crawler=_bool("AUTOSTART_CRAWLER", False),
             seed_urls=_csv("SEED_URLS"),
+            enable_subdomain_probe=_bool("ENABLE_SUBDOMAIN_PROBE", False),
+            publish_to_discord=_bool("PUBLISH_TO_DISCORD", True),
             enable_wayback=_bool("ENABLE_WAYBACK", False),
             wayback_max_snapshots=_int("WAYBACK_MAX_SNAPSHOTS", 25),
         )

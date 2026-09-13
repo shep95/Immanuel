@@ -39,11 +39,22 @@ It's designed to be hosted on **Railway** as a single service.
 ## What it does
 
 - **The algorithm** crawls public web sources 24/7 (politely, respecting `robots.txt`),
-  extracts content from **any media type** (HTML, feeds, JSON, text, images/audio/video
-  metadata), deduplicates it, and stores it with provenance.
+  with **multiple parallel crawler workers** (`NUM_CRAWLERS`), extracts content from
+  **any media type** (HTML, feeds, JSON, text, images/audio/video metadata), deduplicates
+  it, and stores it with provenance.
+- **Timestamps + versioning:** every capture is timestamped. When a page changes between
+  crawls, Immanuel records a **new version** and shows **what was added/removed and when**
+  (see `/recent_updates`, the `immanuel-updates` channel, and `GET /v1/versions`).
+- **Non-index / non-SEO + subdomains:** it doesn't rely on search engines or sitemaps —
+  it follows links directly and (with `ENABLE_SUBDOMAIN_PROBE=true`) probes common
+  subdomains (`blog.`, `api.`, `docs.`, …) and paths to reach hosts/pages that aren't
+  linked or indexed anywhere.
 - **Timeline collection:** with `ENABLE_WAYBACK=true`, each seed is expanded with
   historical captures from the Internet Archive (from when a site was founded up to
   today); forward-in-time ("future days") coverage happens as the crawler keeps running.
+- **Hosts data on your Discord server:** new items are posted into per-category channels
+  and page updates into `#immanuel-updates`, all under a **📚 Immanuel Data** category the
+  bot creates — which is why it needs channel/category permissions.
 - **The classifier** files every item into one of five buckets:
   **public-facts · public-rumors · private-facts · private-rumors · conspiracies**.
   > ⚠️ The "private" labels describe the *subject matter of publicly-posted content*.
@@ -68,6 +79,8 @@ It's designed to be hosted on **Railway** as a single service.
 | `/addsource <url>` | admin | Add a public URL for the crawler to collect |
 | `/sources` | anyone | List recent sources |
 | `/categories` | anyone | Show the 5 categories and current counts |
+| `/recent_updates` | anyone | Show recent page updates (what changed + timestamps) |
+| `/setup_data_channels` | admin | Create the 📚 Immanuel Data category + channels that host the data |
 | `/setup_admin_channel [channel]` | admin | Create/designate the admin log channel for join/leave logs |
 | `/create_channel <name> [category]` | admin | Create a new text channel |
 | `/rename_channel <channel> <new_name>` | admin | Rename a channel |
@@ -90,7 +103,27 @@ open https://<your-app>.up.railway.app/docs
 ```
 
 Endpoints: `GET /health` (public) · `GET /v1/status` · `GET /v1/categories` ·
-`GET /v1/search` · `GET /v1/items/{id}` · `GET /v1/export`.
+`GET /v1/search` · `GET /v1/items/{id}` · `GET /v1/versions?url=…` (page history +
+timestamps) · `GET /v1/updates` (recent changes) · `GET /v1/export`.
+
+## How many crawlers do I need?
+
+Crawler workers are **async I/O tasks**, so one Railway container runs many cheaply.
+Throughput is bounded by **per-domain politeness** (`CRAWL_DELAY_SECONDS`), not by CPU —
+so the way to go faster is more *distinct domains*, not more workers per domain.
+
+Rough sizing (with `CRAWL_DELAY_SECONDS=2`, i.e. ≤0.5 req/s per host):
+
+| Goal | `NUM_CRAWLERS` | Notes |
+|------|----------------|-------|
+| Light / a few dozen sites | 8 | default; comfortable on 1 small container |
+| Busy / hundreds of domains | 16 | good balance |
+| Heavy / thousands of domains | 32 | 1 larger container, or scale out |
+| Very large | 32 per container × N containers | run multiple Railway replicas sharing the DB (Postgres — a roadmap item), one politeness budget per host |
+
+Formula: sustainable pages/sec ≈ `min(NUM_CRAWLERS, distinct_domains) / CRAWL_DELAY_SECONDS`.
+With 16 workers across ≥16 domains at 2s delay ≈ **8 pages/sec ≈ 690k pages/day**.
+Increase `MAX_PAGES_PER_CYCLE` and lower `CYCLE_INTERVAL_SECONDS` to raise per-cycle volume.
 
 ## Setup — Step by step
 
@@ -124,9 +157,11 @@ Endpoints: `GET /health` (public) · `GET /v1/status` · `GET /v1/categories` ·
 ### 3. First run in Discord
 ```
 /setup_admin_channel          → creates #immanuel-admin-log (join/leave logs land here)
+/setup_data_channels          → creates 📚 Immanuel Data + per-category channels (data hosted here)
 /addsource https://example.com/news     → give it something to crawl
-/start                        → the algorithm begins collecting 24/7
-/updates                      → watch totals climb, per category
+/start                        → the algorithm begins collecting 24/7 (multiple workers)
+/updates                      → watch totals climb, per category, versions & updates
+/recent_updates               → see which pages changed, what changed, and when
 /apikey myapp                 → get an API key to plug into your app/LLM
 /download                     → pull everything collected as a file
 ```

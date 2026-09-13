@@ -82,6 +82,19 @@ def create_app(db: Database, engine: Any = None) -> FastAPI:
                 return _public_item(r, full=True)
         raise HTTPException(status_code=404, detail="not found")
 
+    @app.get("/v1/versions")
+    def versions(url: str = Query(..., description="the page URL"),
+                 _: dict = Depends(require_key)) -> dict:
+        rows = db.get_versions(url, limit=200)
+        ts = db.url_timestamps(url)
+        return {"url": url, "timestamps": ts, "versions": rows}
+
+    @app.get("/v1/updates")
+    def updates(_: dict = Depends(require_key),
+                limit: int = Query(default=25, ge=1, le=200)) -> dict:
+        rows = db.recent_updates(limit)
+        return {"count": len(rows), "updates": rows}
+
     @app.get("/v1/export")
     def export(_: dict = Depends(require_key),
                limit: int = Query(default=1000, ge=1, le=10000)) -> JSONResponse:

@@ -15,6 +15,7 @@ from ..config import Config
 from ..db import Database
 from ..engine import Engine
 from ..keys import generate_api_key
+from .publisher import Publisher
 
 DISCORD_FILE_LIMIT = 7_800_000  # keep under the 8 MB non-nitro upload cap
 
@@ -27,12 +28,15 @@ def _is_admin(interaction: discord.Interaction, config: Config) -> bool:
     return bool(perms and perms.administrator)
 
 
-def create_bot(db: Database, engine: Engine, config: Config) -> commands.Bot:
+def create_bot(db: Database, engine: Engine, config: Config,
+               publish_queue=None) -> commands.Bot:
     intents = discord.Intents.default()
     intents.members = True  # required for join/leave logging (enable in dev portal)
 
     bot = commands.Bot(command_prefix="!", intents=intents)
     tree = bot.tree
+    publisher = Publisher(bot, db, config) if publish_queue is not None else None
+    bot._immanuel_publisher_started = False
 
     async def admin_only(interaction: discord.Interaction) -> bool:
         if _is_admin(interaction, config):
@@ -66,6 +70,14 @@ def create_bot(db: Database, engine: Engine, config: Config) -> commands.Bot:
                 await tree.sync()
         except Exception as e:  # pragma: no cover
             print(f"[immanuel] command sync failed: {e}")
+        # start the data publisher consumer once
+        if publisher is not None and publish_queue is not None and not bot._immanuel_publisher_started:
+            bot._immanuel_publisher_started = True
+            bot.loop.create_task(publisher.run(publish_queue))
+            try:
+                await publisher.ensure_channels()
+            except Exception as e:  # pragma: no cover
+                print(f"[immanuel] channel setup deferred: {e}")
         print(f"[immanuel] logged in as {bot.user} — commands ready")
 
     @bot.event
@@ -123,9 +135,12 @@ def create_bot(db: Database, engine: Engine, config: Config) -> commands.Bot:
         emb.add_field(name="Uptime (s)", value=int(snap["uptime_seconds"]), inline=True)
         emb.add_field(name="Items", value=snap["items_total"], inline=True)
         emb.add_field(name="Sources", value=f'{snap["sources_active"]}/{snap["sources_total"]} active', inline=True)
+        emb.add_field(name="Workers", value=snap["workers"], inline=True)
+        emb.add_field(name="Versions/Updates",
+                      value=f'{snap["versions_total"]}/{snap["updates_total"]}', inline=True)
         s = snap["stats"]
         emb.add_field(name="Cycles", value=s["cycles"], inline=True)
-        emb.add_field(name="Stored/Dupes", value=f'{s["stored"]}/{s["duplicates"]}', inline=True)
+        emb.add_field(name="New/Updated", value=f'{s["new_pages"]}/{s["updated"]}', inline=True)
         cats = snap["by_category"]
         if cats:
             lines = [f'• {DISPLAY.get(k, k)}: {v}' for k, v in sorted(cats.items())]
@@ -214,6 +229,41 @@ def create_bot(db: Database, engine: Engine, config: Config) -> commands.Bot:
             "**Immanuel classifies public content into:**\n" + "\n".join(lines)
             + "\n\n_Note: 'private' labels describe the claim's subject matter in "
             "publicly-posted content — Immanuel never accesses private systems._")
+
+    @tree.command(name="setup_data_channels",
+                  description="Create the data category + channels where collected data is hosted.")
+    async def setup_data_channels(interaction: discord.Interaction) -> None:
+        if not await admin_only(interaction):
+            return
+        if publisher is None:
+            await interaction.response.send_message(
+                "Publishing is disabled for this deployment.", ephemeral=True)
+            return
+        await interaction.response.defer(thinking=True)
+        mapping = await publisher.ensure_channels()
+        if not mapping:
+            await interaction.followup.send(
+                "❌ Could not create channels — I need **Manage Channels**.")
+            return
+        names = ", ".join(f"#{n}" for n in mapping)
+        await interaction.followup.send(
+            f"✅ Data channels ready under **📚 Immanuel Data**: {names}\n"
+            "New items and page updates will be posted here as they're collected.")
+
+    @tree.command(name="recent_updates", description="Show the most recent page updates (with timestamps).")
+    async def recent_updates(interaction: discord.Interaction) -> None:
+        rows = await asyncio.to_thread(db.recent_updates, 10)
+        if not rows:
+            await interaction.response.send_message("No page updates recorded yet.")
+            return
+        lines = []
+        for r in rows:
+            lines.append(
+                f'• <t:{int(r["fetched_at"])}:R> **v{r["version_no"]}** '
+                f'{r["diff_summary"]} — {r["url"][:80]}'
+            )
+        await interaction.response.send_message(
+            "**Recent page updates:**\n" + "\n".join(lines)[:1900])
 
     # -------------------------------------------------- channel management
     @tree.command(name="setup_admin_channel",

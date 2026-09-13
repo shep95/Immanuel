@@ -25,7 +25,9 @@ from .engine import Engine
 async def _run() -> None:
     config = Config.from_env()
     db = Database(config.database_path)
-    engine = Engine(db, config)
+    # Bounded queue so a slow/absent Discord never grows memory unboundedly.
+    publish_queue: asyncio.Queue = asyncio.Queue(maxsize=2000)
+    engine = Engine(db, config, publish_queue=publish_queue)
 
     # Seed sources (and optional Wayback history) before the loop starts.
     try:
@@ -49,7 +51,7 @@ async def _run() -> None:
     if config.discord_token:
         from .discordbot.bot import create_bot
 
-        bot = create_bot(db, engine, config)
+        bot = create_bot(db, engine, config, publish_queue=publish_queue)
         tasks.append(asyncio.create_task(bot.start(config.discord_token), name="discord"))
     else:
         print("[immanuel] DISCORD_TOKEN not set — running API + engine only.")

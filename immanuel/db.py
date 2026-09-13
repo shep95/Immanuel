@@ -41,6 +41,25 @@ CREATE INDEX IF NOT EXISTS idx_items_category ON items(category);
 CREATE INDEX IF NOT EXISTS idx_items_domain ON items(source_domain);
 CREATE INDEX IF NOT EXISTS idx_items_fetched ON items(fetched_at);
 
+CREATE TABLE IF NOT EXISTS page_versions (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    url           TEXT NOT NULL,
+    version_no    INTEGER NOT NULL,
+    content_hash  TEXT NOT NULL,
+    title         TEXT,
+    excerpt       TEXT,
+    diff_summary  TEXT,           -- e.g. "+12 lines, -3 lines"
+    added_text    TEXT,           -- the NEW data that appeared in this version
+    removed_text  TEXT,           -- data that disappeared
+    changed_chars INTEGER,
+    timeline_ts   TEXT,           -- source-declared publish/update time if known
+    fetched_at    REAL NOT NULL,  -- when Immanuel captured this version (timestamp)
+    created_at    REAL NOT NULL,
+    UNIQUE(url, version_no)
+);
+CREATE INDEX IF NOT EXISTS idx_versions_url ON page_versions(url);
+CREATE INDEX IF NOT EXISTS idx_versions_fetched ON page_versions(fetched_at);
+
 CREATE TABLE IF NOT EXISTS sources (
     id           INTEGER PRIMARY KEY AUTOINCREMENT,
     url          TEXT UNIQUE NOT NULL,
@@ -196,6 +215,85 @@ class Database:
         d["media"] = json.loads(d.pop("media_json") or "[]")
         d["signals"] = json.loads(d.pop("signals_json") or "[]")
         return d
+
+    def get_item_content_by_hash(self, content_hash: str) -> str | None:
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT content FROM items WHERE content_hash=? LIMIT 1",
+                (content_hash,),
+            ).fetchone()
+        return row["content"] if row else None
+
+    # ------------------------------------------------------- page_versions
+    def get_latest_version(self, url: str) -> dict[str, Any] | None:
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT * FROM page_versions WHERE url=? "
+                "ORDER BY version_no DESC LIMIT 1",
+                (url,),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def add_page_version(self, url: str, version_no: int, content_hash: str,
+                         title: str | None, excerpt: str | None,
+                         diff_summary: str | None, added_text: str | None,
+                         removed_text: str | None, changed_chars: int,
+                         timeline_ts: str | None, fetched_at: float) -> int:
+        now = time.time()
+        with self._lock:
+            cur = self._conn.execute(
+                """INSERT INTO page_versions
+                   (url, version_no, content_hash, title, excerpt, diff_summary,
+                    added_text, removed_text, changed_chars, timeline_ts,
+                    fetched_at, created_at)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (url, version_no, content_hash, title, excerpt, diff_summary,
+                 added_text, removed_text, changed_chars, timeline_ts,
+                 fetched_at, now),
+            )
+            self._conn.commit()
+            return cur.lastrowid
+
+    def get_versions(self, url: str, limit: int = 50) -> list[dict[str, Any]]:
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT * FROM page_versions WHERE url=? "
+                "ORDER BY version_no ASC LIMIT ?",
+                (url, limit),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def url_timestamps(self, url: str) -> dict[str, Any]:
+        """first_seen / last_seen / version count for a URL."""
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT MIN(fetched_at) first_seen, MAX(fetched_at) last_seen, "
+                "COUNT(*) versions FROM page_versions WHERE url=?",
+                (url,),
+            ).fetchone()
+        return dict(row) if row else {"first_seen": None, "last_seen": None, "versions": 0}
+
+    def recent_updates(self, limit: int = 25) -> list[dict[str, Any]]:
+        """Most recent page updates (version_no > 1), newest first."""
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT * FROM page_versions WHERE version_no > 1 "
+                "ORDER BY fetched_at DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def count_versions(self) -> int:
+        with self._lock:
+            return self._conn.execute(
+                "SELECT COUNT(*) FROM page_versions"
+            ).fetchone()[0]
+
+    def count_updates(self) -> int:
+        with self._lock:
+            return self._conn.execute(
+                "SELECT COUNT(*) FROM page_versions WHERE version_no > 1"
+            ).fetchone()[0]
 
     # --------------------------------------------------------------- sources
     def add_source(self, url: str, kind: str = "seed", added_by: str | None = None,
