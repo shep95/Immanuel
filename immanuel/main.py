@@ -20,6 +20,7 @@ from .api.app import create_app
 from .config import Config
 from .db import Database
 from .engine import Engine
+from .patternforge.runner import PatternForge
 
 
 async def _run() -> None:
@@ -37,7 +38,10 @@ async def _run() -> None:
     except Exception as e:  # pragma: no cover
         print(f"[immanuel] seeding error: {e}")
 
-    app = create_app(db, engine)
+    # Pattern Forge: the second, non-AI algorithm — learns patterns 24/7.
+    forge = PatternForge(db, config)
+
+    app = create_app(db, engine, forge)
     uv_config = uvicorn.Config(app, host=config.api_host, port=config.api_port,
                                log_level="info", loop="asyncio")
     server = uvicorn.Server(uv_config)
@@ -45,13 +49,15 @@ async def _run() -> None:
     tasks = [
         asyncio.create_task(server.serve(), name="api"),
         asyncio.create_task(engine.run_forever(), name="engine"),
+        asyncio.create_task(forge.run_forever(), name="patternforge"),
     ]
 
     bot = None
     if config.discord_token:
         from .discordbot.bot import create_bot
 
-        bot = create_bot(db, engine, config, publish_queue=publish_queue)
+        bot = create_bot(db, engine, config, publish_queue=publish_queue,
+                         forge=forge)
         tasks.append(asyncio.create_task(bot.start(config.discord_token), name="discord"))
     else:
         print("[immanuel] DISCORD_TOKEN not set — running API + engine only.")
@@ -74,6 +80,7 @@ async def _run() -> None:
 
     print("[immanuel] shutting down…")
     engine.request_shutdown()
+    forge.request_shutdown()
     server.should_exit = True
     if bot is not None:
         with contextlib.suppress(Exception):

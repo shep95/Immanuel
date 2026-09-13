@@ -34,12 +34,20 @@ CREATE TABLE IF NOT EXISTS items (
     epistemic_status TEXT,
     timeline_ts     TEXT,           -- original publication / capture time (ISO) if known
     collector       TEXT,           -- live|wayback
+    company         TEXT,           -- registrable entity / brand the page belongs to
+    topic           TEXT,           -- deterministic topic bucket
+    meta_json       TEXT,           -- full page metadata (meta tags, og, headers)
+    code_json       TEXT,           -- code assets found on the page (js/css/json/inline)
+    secrets_count   INTEGER DEFAULT 0,
+    lang            TEXT,           -- declared content language, if any
     fetched_at      REAL NOT NULL,
     created_at      REAL NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_items_category ON items(category);
 CREATE INDEX IF NOT EXISTS idx_items_domain ON items(source_domain);
 CREATE INDEX IF NOT EXISTS idx_items_fetched ON items(fetched_at);
+CREATE INDEX IF NOT EXISTS idx_items_company ON items(company);
+CREATE INDEX IF NOT EXISTS idx_items_topic ON items(topic);
 
 CREATE TABLE IF NOT EXISTS page_versions (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -97,7 +105,93 @@ CREATE TABLE IF NOT EXISTS kv (
     key   TEXT PRIMARY KEY,
     value TEXT
 );
+
+-- Exposed secrets / API keys found on PUBLIC pages (admin-only surface).
+-- Values are stored MASKED plus a sha256 fingerprint; the raw secret is never
+-- persisted, so this is a safe "these credentials are publicly leaking" ledger.
+CREATE TABLE IF NOT EXISTS secrets_found (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    url           TEXT NOT NULL,
+    domain        TEXT,
+    secret_type   TEXT NOT NULL,
+    masked        TEXT NOT NULL,
+    fingerprint   TEXT NOT NULL,          -- sha256 of the raw match (dedup, never the secret)
+    context       TEXT,
+    severity      TEXT,
+    found_at      REAL NOT NULL,
+    UNIQUE(fingerprint, url)
+);
+CREATE INDEX IF NOT EXISTS idx_secrets_domain ON secrets_found(domain);
+CREATE INDEX IF NOT EXISTS idx_secrets_type ON secrets_found(secret_type);
+
+-- Per-page intel data-report (open metadata of media/files + link graph).
+CREATE TABLE IF NOT EXISTS intel_reports (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    url           TEXT NOT NULL,
+    domain        TEXT,
+    report_json   TEXT NOT NULL,
+    media_count   INTEGER DEFAULT 0,
+    secrets_count INTEGER DEFAULT 0,
+    links_count   INTEGER DEFAULT 0,
+    created_at    REAL NOT NULL,
+    UNIQUE(url)
+);
+CREATE INDEX IF NOT EXISTS idx_intel_domain ON intel_reports(domain);
+
+-- Pattern Forge library: patterns learned by the non-AI second algorithm.
+CREATE TABLE IF NOT EXISTS patterns (
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    pattern_id     TEXT UNIQUE NOT NULL,   -- stable deterministic id
+    name           TEXT NOT NULL,
+    domain         TEXT,
+    family         TEXT,
+    scope          TEXT,                   -- ephemeral|task|domain|system ...
+    mechanism      TEXT,
+    status         TEXT NOT NULL,          -- unknown|candidate|testing|validated|active|deprecated|retired
+    confidence     REAL DEFAULT 0.0,
+    evidence_count INTEGER DEFAULT 0,
+    data_json      TEXT,                   -- full universal pattern object
+    created_at     REAL NOT NULL,
+    updated_at     REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_patterns_status ON patterns(status);
+CREATE INDEX IF NOT EXISTS idx_patterns_domain ON patterns(domain);
+
+-- Conditional-GET cache so a restarted crawler does not re-download unchanged
+-- pages (it "knows what it collected"): sends If-None-Match / If-Modified-Since.
+CREATE TABLE IF NOT EXISTS http_cache (
+    url           TEXT PRIMARY KEY,
+    etag          TEXT,
+    last_modified TEXT,
+    content_hash  TEXT,
+    updated_at    REAL NOT NULL
+);
+
+-- Downloaded media assets (content-addressed on disk).
+CREATE TABLE IF NOT EXISTS media_assets (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    sha256        TEXT UNIQUE NOT NULL,
+    source_url    TEXT NOT NULL,
+    page_url      TEXT,
+    media_type    TEXT,
+    content_type  TEXT,
+    bytes         INTEGER,
+    stored_path   TEXT,
+    meta_json     TEXT,                    -- open metadata (EXIF, dimensions, etc.)
+    created_at    REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_media_page ON media_assets(page_url);
 """
+
+# Columns added after v0.1 — applied idempotently to already-created DBs.
+_ITEM_MIGRATIONS = {
+    "company": "ALTER TABLE items ADD COLUMN company TEXT",
+    "topic": "ALTER TABLE items ADD COLUMN topic TEXT",
+    "meta_json": "ALTER TABLE items ADD COLUMN meta_json TEXT",
+    "code_json": "ALTER TABLE items ADD COLUMN code_json TEXT",
+    "secrets_count": "ALTER TABLE items ADD COLUMN secrets_count INTEGER DEFAULT 0",
+    "lang": "ALTER TABLE items ADD COLUMN lang TEXT",
+}
 
 
 class Database:
@@ -113,7 +207,19 @@ class Database:
         self._conn.execute("PRAGMA foreign_keys=ON;")
         with self._lock:
             self._conn.executescript(SCHEMA)
+            self._migrate()
             self._conn.commit()
+
+    def _migrate(self) -> None:
+        """Add columns introduced after the first release (idempotent)."""
+        cols = {r["name"] for r in self._conn.execute(
+            "PRAGMA table_info(items)").fetchall()}
+        for col, ddl in _ITEM_MIGRATIONS.items():
+            if col not in cols:
+                try:
+                    self._conn.execute(ddl)
+                except sqlite3.OperationalError:
+                    pass
 
     def close(self) -> None:
         with self._lock:
@@ -129,8 +235,9 @@ class Database:
                     """INSERT INTO items
                     (content_hash, url, source_domain, title, content, excerpt,
                      media_json, category, category_confidence, signals_json,
-                     epistemic_status, timeline_ts, collector, fetched_at, created_at)
-                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                     epistemic_status, timeline_ts, collector, company, topic,
+                     meta_json, code_json, secrets_count, lang, fetched_at, created_at)
+                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                     (
                         item["content_hash"],
                         item["url"],
@@ -145,6 +252,12 @@ class Database:
                         item.get("epistemic_status"),
                         item.get("timeline_ts"),
                         item.get("collector", "live"),
+                        item.get("company"),
+                        item.get("topic"),
+                        json.dumps(item.get("meta", {})),
+                        json.dumps(item.get("code", [])),
+                        item.get("secrets_count", 0),
+                        item.get("lang"),
                         item.get("fetched_at", now),
                         now,
                     ),
@@ -177,6 +290,8 @@ class Database:
         query: str | None = None,
         category: str | None = None,
         domain: str | None = None,
+        company: str | None = None,
+        topic: str | None = None,
         limit: int = 50,
         offset: int = 0,
     ) -> list[dict[str, Any]]:
@@ -184,14 +299,20 @@ class Database:
         offset = max(0, offset)
         clauses, params = [], []
         if query:
-            clauses.append("(title LIKE ? OR content LIKE ?)")
-            params += [f"%{query}%", f"%{query}%"]
+            clauses.append("(title LIKE ? OR content LIKE ? OR url LIKE ?)")
+            params += [f"%{query}%", f"%{query}%", f"%{query}%"]
         if category:
             clauses.append("category = ?")
             params.append(category)
         if domain:
             clauses.append("source_domain = ?")
             params.append(domain)
+        if company:
+            clauses.append("company = ?")
+            params.append(company)
+        if topic:
+            clauses.append("topic = ?")
+            params.append(topic)
         where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
         sql = (
             f"SELECT * FROM items {where} ORDER BY fetched_at DESC LIMIT ? OFFSET ?"
@@ -214,6 +335,8 @@ class Database:
         d = dict(r)
         d["media"] = json.loads(d.pop("media_json") or "[]")
         d["signals"] = json.loads(d.pop("signals_json") or "[]")
+        d["meta"] = json.loads(d.pop("meta_json", None) or "{}")
+        d["code"] = json.loads(d.pop("code_json", None) or "[]")
         return d
 
     def get_item_content_by_hash(self, content_hash: str) -> str | None:
@@ -470,3 +593,256 @@ class Database:
                 "SELECT value FROM kv WHERE key=?", (key,)
             ).fetchone()
         return row["value"] if row else default
+
+    # ------------------------------------------------- companies / topics
+    def list_companies(self, limit: int = 500) -> list[dict[str, Any]]:
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT company, COUNT(*) c FROM items "
+                "WHERE company IS NOT NULL AND company != '' "
+                "GROUP BY company ORDER BY c DESC LIMIT ?", (limit,),
+            ).fetchall()
+        return [{"company": r["company"], "count": r["c"]} for r in rows]
+
+    def list_topics(self, limit: int = 500) -> list[dict[str, Any]]:
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT topic, COUNT(*) c FROM items "
+                "WHERE topic IS NOT NULL AND topic != '' "
+                "GROUP BY topic ORDER BY c DESC LIMIT ?", (limit,),
+            ).fetchall()
+        return [{"topic": r["topic"], "count": r["c"]} for r in rows]
+
+    # --------------------------------------------------------- secrets_found
+    def add_secret(self, url: str, domain: str | None, secret_type: str,
+                   masked: str, fingerprint: str, context: str | None,
+                   severity: str = "medium") -> bool:
+        with self._lock:
+            try:
+                self._conn.execute(
+                    """INSERT INTO secrets_found
+                       (url, domain, secret_type, masked, fingerprint, context,
+                        severity, found_at)
+                       VALUES (?,?,?,?,?,?,?,?)""",
+                    (url, domain, secret_type, masked, fingerprint,
+                     (context or "")[:400], severity, time.time()),
+                )
+                self._conn.commit()
+                return True
+            except sqlite3.IntegrityError:
+                return False
+
+    def recent_secrets(self, limit: int = 50) -> list[dict[str, Any]]:
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT * FROM secrets_found ORDER BY id DESC LIMIT ?", (limit,)
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def count_secrets(self) -> int:
+        with self._lock:
+            return self._conn.execute(
+                "SELECT COUNT(*) FROM secrets_found").fetchone()[0]
+
+    # --------------------------------------------------------- intel_reports
+    def upsert_intel_report(self, url: str, domain: str | None, report: dict[str, Any],
+                            media_count: int, secrets_count: int,
+                            links_count: int) -> None:
+        with self._lock:
+            self._conn.execute(
+                """INSERT INTO intel_reports
+                   (url, domain, report_json, media_count, secrets_count,
+                    links_count, created_at)
+                   VALUES (?,?,?,?,?,?,?)
+                   ON CONFLICT(url) DO UPDATE SET
+                     report_json=excluded.report_json,
+                     media_count=excluded.media_count,
+                     secrets_count=excluded.secrets_count,
+                     links_count=excluded.links_count,
+                     created_at=excluded.created_at""",
+                (url, domain, json.dumps(report), media_count, secrets_count,
+                 links_count, time.time()),
+            )
+            self._conn.commit()
+
+    def get_intel_report(self, url: str) -> dict[str, Any] | None:
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT * FROM intel_reports WHERE url=?", (url,)
+            ).fetchone()
+        if not row:
+            return None
+        d = dict(row)
+        d["report"] = json.loads(d.pop("report_json") or "{}")
+        return d
+
+    def recent_intel(self, limit: int = 25) -> list[dict[str, Any]]:
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT url, domain, media_count, secrets_count, links_count, "
+                "created_at FROM intel_reports ORDER BY id DESC LIMIT ?", (limit,)
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def count_intel(self) -> int:
+        with self._lock:
+            return self._conn.execute(
+                "SELECT COUNT(*) FROM intel_reports").fetchone()[0]
+
+    # -------------------------------------------------------------- patterns
+    def upsert_pattern(self, p: dict[str, Any]) -> None:
+        now = time.time()
+        with self._lock:
+            self._conn.execute(
+                """INSERT INTO patterns
+                   (pattern_id, name, domain, family, scope, mechanism, status,
+                    confidence, evidence_count, data_json, created_at, updated_at)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+                   ON CONFLICT(pattern_id) DO UPDATE SET
+                     name=excluded.name, domain=excluded.domain,
+                     family=excluded.family, scope=excluded.scope,
+                     mechanism=excluded.mechanism, status=excluded.status,
+                     confidence=excluded.confidence,
+                     evidence_count=excluded.evidence_count,
+                     data_json=excluded.data_json, updated_at=excluded.updated_at""",
+                (p["pattern_id"], p.get("name"), p.get("domain"), p.get("family"),
+                 p.get("scope"), p.get("mechanism"), p.get("status", "candidate"),
+                 float(p.get("confidence", 0.0)), int(p.get("evidence_count", 0)),
+                 json.dumps(p.get("data", {})), now, now),
+            )
+            self._conn.commit()
+
+    def get_pattern(self, pattern_id: str) -> dict[str, Any] | None:
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT * FROM patterns WHERE pattern_id=?", (pattern_id,)
+            ).fetchone()
+        if not row:
+            return None
+        d = dict(row)
+        d["data"] = json.loads(d.pop("data_json") or "{}")
+        return d
+
+    def list_patterns(self, status: str | None = None,
+                      limit: int = 1000) -> list[dict[str, Any]]:
+        with self._lock:
+            if status:
+                rows = self._conn.execute(
+                    "SELECT * FROM patterns WHERE status=? "
+                    "ORDER BY confidence DESC, evidence_count DESC LIMIT ?",
+                    (status, limit)).fetchall()
+            else:
+                rows = self._conn.execute(
+                    "SELECT * FROM patterns "
+                    "ORDER BY confidence DESC, evidence_count DESC LIMIT ?",
+                    (limit,)).fetchall()
+        out = []
+        for r in rows:
+            d = dict(r)
+            d["data"] = json.loads(d.pop("data_json") or "{}")
+            out.append(d)
+        return out
+
+    def count_patterns(self, status: str | None = None) -> int:
+        with self._lock:
+            if status:
+                return self._conn.execute(
+                    "SELECT COUNT(*) FROM patterns WHERE status=?",
+                    (status,)).fetchone()[0]
+            return self._conn.execute("SELECT COUNT(*) FROM patterns").fetchone()[0]
+
+    # ------------------------------------------------------------ http_cache
+    def get_http_cache(self, url: str) -> dict[str, Any] | None:
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT * FROM http_cache WHERE url=?", (url,)
+            ).fetchone()
+        return dict(row) if row else None
+
+    def set_http_cache(self, url: str, etag: str | None,
+                       last_modified: str | None, content_hash: str | None) -> None:
+        with self._lock:
+            self._conn.execute(
+                """INSERT INTO http_cache (url, etag, last_modified, content_hash, updated_at)
+                   VALUES (?,?,?,?,?)
+                   ON CONFLICT(url) DO UPDATE SET
+                     etag=excluded.etag, last_modified=excluded.last_modified,
+                     content_hash=excluded.content_hash, updated_at=excluded.updated_at""",
+                (url, etag, last_modified, content_hash, time.time()),
+            )
+            self._conn.commit()
+
+    # ---------------------------------------------------------- media_assets
+    def add_media_asset(self, sha256: str, source_url: str, page_url: str | None,
+                        media_type: str | None, content_type: str | None,
+                        num_bytes: int, stored_path: str | None,
+                        meta: dict[str, Any] | None) -> bool:
+        with self._lock:
+            try:
+                self._conn.execute(
+                    """INSERT INTO media_assets
+                       (sha256, source_url, page_url, media_type, content_type,
+                        bytes, stored_path, meta_json, created_at)
+                       VALUES (?,?,?,?,?,?,?,?,?)""",
+                    (sha256, source_url, page_url, media_type, content_type,
+                     num_bytes, stored_path, json.dumps(meta or {}), time.time()),
+                )
+                self._conn.commit()
+                return True
+            except sqlite3.IntegrityError:
+                return False
+
+    # ----------------------------------------------- pattern-forge aggregates
+    def agg_topic_category(self) -> list[dict[str, Any]]:
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT topic, category, COUNT(*) c FROM items "
+                "WHERE topic IS NOT NULL GROUP BY topic, category"
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def agg_company_topic(self) -> list[dict[str, Any]]:
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT company, topic, COUNT(*) c FROM items "
+                "WHERE company IS NOT NULL AND topic IS NOT NULL "
+                "GROUP BY company, topic"
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def agg_domain_items(self) -> list[dict[str, Any]]:
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT source_domain domain, COUNT(*) c FROM items "
+                "WHERE source_domain IS NOT NULL GROUP BY source_domain"
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def agg_secret_domains(self) -> list[dict[str, Any]]:
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT domain, COUNT(*) c, COUNT(DISTINCT secret_type) types "
+                "FROM secrets_found WHERE domain IS NOT NULL GROUP BY domain"
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def agg_url_versions(self, min_versions: int = 2,
+                         limit: int = 5000) -> list[dict[str, Any]]:
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT url, MAX(version_no) v FROM page_versions "
+                "GROUP BY url HAVING v >= ? ORDER BY v DESC LIMIT ?",
+                (min_versions, limit),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def media_exists(self, sha256: str) -> bool:
+        with self._lock:
+            return self._conn.execute(
+                "SELECT 1 FROM media_assets WHERE sha256=? LIMIT 1", (sha256,)
+            ).fetchone() is not None
+
+    def count_media_assets(self) -> int:
+        with self._lock:
+            return self._conn.execute(
+                "SELECT COUNT(*) FROM media_assets").fetchone()[0]

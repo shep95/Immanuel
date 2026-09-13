@@ -119,6 +119,7 @@ class AgentSwarm:
             res = await process_url(
                 url, self._fetcher, self._robots, self.db,
                 max_links=self.config.max_links_per_page, discover=True,
+                config=self.config,
             )
             st["processed"] += 1
             st["discovered"] += res.discovered
@@ -132,6 +133,9 @@ class AgentSwarm:
                 st["stored"] += 1
             if self.config.publish_to_discord and (res.is_new_page or res.is_update):
                 self.engine._emit(res.event())
+            if self.config.publish_to_discord and res.secrets:
+                self.engine._emit({"kind": "secrets", "url": res.url,
+                                   "domain": res.domain, "secrets": res.secrets})
             ok = res.stored or res.unchanged or res.is_new_page or res.is_update
             self.db.mark_url_crawled(url, ok=ok)
             # fan out one more hop, if within the hop budget

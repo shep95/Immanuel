@@ -16,6 +16,7 @@ from .diffing import compute_diff
 from .extract import extract
 from .fetcher import Fetcher
 from .robots import RobotsCache
+from .secrets import scan_secrets
 
 
 @dataclass
@@ -41,6 +42,14 @@ class ProcessResult:
     media: list = field(default_factory=list)
     discovered: int = 0
     links: list = field(default_factory=list)   # http(s) links found on the page
+    # deep-acquisition extras
+    company: str | None = None
+    topic: str | None = None
+    lang: str | None = None
+    secrets: list = field(default_factory=list)      # masked findings only
+    media_assets: list = field(default_factory=list)  # downloaded assets
+    code: list = field(default_factory=list)
+    intel: bool = False
 
     def event(self) -> dict:
         """A compact record for the Discord publisher / event queue."""
@@ -50,6 +59,8 @@ class ProcessResult:
             "domain": self.domain,
             "title": self.title,
             "category": self.category,
+            "company": self.company,
+            "topic": self.topic,
             "version_no": self.version_no,
             "diff_summary": self.diff_summary,
             "added_text": self.added_text,
@@ -57,7 +68,19 @@ class ProcessResult:
             "fetched_at": self.fetched_at,
             "timeline_ts": self.timeline_ts,
             "media": self.media,
+            "secrets_count": len(self.secrets),
+            "media_downloaded": len(self.media_assets),
         }
+
+
+async def _fetch(fetcher, url, extra_headers):
+    """Fetch with optional conditional-GET headers; fall back if unsupported."""
+    if extra_headers:
+        try:
+            return await fetcher.fetch(url, extra_headers=extra_headers)
+        except TypeError:
+            pass
+    return await fetcher.fetch(url)
 
 
 async def process_url(
@@ -68,25 +91,74 @@ async def process_url(
     max_links: int = 20,
     collector: str = "live",
     discover: bool = True,
+    config=None,
 ) -> ProcessResult:
-    """Fetch and fully process a single URL."""
+    """Fetch and fully process a single URL.
+
+    When ``config`` is provided, deep-acquisition runs: full metadata + code
+    capture, exposed-secret scanning, company/topic organization, YouTube
+    transcript + thumbnail import, media download, and an intel data-report.
+    Without ``config`` the classic behavior (extract → classify → version →
+    store → discover) is preserved unchanged.
+    """
     if not url.startswith(("http://", "https://")):
         return ProcessResult(url, skipped=True, reason="unsupported scheme")
 
     if not await robots.allowed(url, fetcher.client):
         return ProcessResult(url, skipped=True, reason="blocked by robots.txt")
 
-    res = await fetcher.fetch(url)
+    # conditional GET so a restarted crawler doesn't re-download unchanged pages
+    extra_headers = None
+    if config is not None:
+        cache = db.get_http_cache(url)
+        if cache:
+            hdrs = {}
+            if cache.get("etag"):
+                hdrs["If-None-Match"] = cache["etag"]
+            if cache.get("last_modified"):
+                hdrs["If-Modified-Since"] = cache["last_modified"]
+            extra_headers = hdrs or None
+
+    res = await _fetch(fetcher, url, extra_headers)
+    if config is not None and getattr(res, "status", 0) == 304:
+        return ProcessResult(url, skipped=True, unchanged=True, reason="not modified (304)")
     if not res.ok:
         return ProcessResult(url, skipped=True, reason=res.error or "fetch failed")
 
     final_url = res.final_url
     ex = extract(final_url, res.content_type, res.body)
+
+    # --- YouTube: fold transcript into text, capture thumbnail (before hash) --
+    if config is not None and getattr(config, "enable_youtube", False):
+        from ..media.youtube import is_youtube, process_youtube
+        if is_youtube(final_url):
+            yt = process_youtube(final_url, getattr(config, "youtube_langs", ["en"]))
+            if yt:
+                if yt.get("transcript"):
+                    ex.text = (ex.text + "\n\n[youtube transcript]\n"
+                               + yt["transcript"])[:200000]
+                ex.media.append({"type": "image", "url": yt["thumbnail"],
+                                 "role": "youtube-thumbnail"})
+                ex.meta.setdefault("youtube_video_id", yt["video_id"])
+
     content_hash = ex.content_hash
     fetched_at = time.time()
     domain = urlparse(final_url).netloc
 
     cls = classify(ex.title, ex.text)
+
+    # --- deep acquisition: organize + secrets (computed before store) --------
+    company = topic = None
+    secrets_found: list[dict] = []
+    if config is not None:
+        from ..organize import company_for, topic_for
+        company = company_for(final_url, ex.meta)
+        topic, _hits = topic_for(ex.title, ex.text, ex.meta)
+        if getattr(config, "scan_secrets", False):
+            blob = ex.text + "\n" + "\n".join(
+                c.get("snippet", "") for c in ex.code if c.get("snippet"))
+            for s in scan_secrets(blob):
+                secrets_found.append(s.as_dict())
 
     # --- versioning / timestamps --------------------------------------------
     latest = db.get_latest_version(final_url)
@@ -134,9 +206,21 @@ async def process_url(
             "timeline_ts": ex.timeline_ts,
             "collector": collector,
             "fetched_at": fetched_at,
+            "company": company,
+            "topic": topic,
+            "meta": ex.meta,
+            "code": ex.code,
+            "secrets_count": len(secrets_found),
+            "lang": ex.lang,
             **cls.as_dict(),
         }
         stored = db.add_item(item) is not None
+
+    # --- persist exposed-secret findings (admin-only surface) ---------------
+    if config is not None and secrets_found:
+        for s in secrets_found:
+            db.add_secret(final_url, domain, s["type"], s["masked"],
+                          s["fingerprint"], s["context"], s["severity"])
 
     # --- discovery (links + subdomains as future sources) -------------------
     discovered = 0
@@ -148,6 +232,37 @@ async def process_url(
                 if discover and db.add_source(link, kind="discovered",
                                               domain=urlparse(link).netloc):
                     discovered += 1
+
+    # --- media download + intel report (deep acquisition only) --------------
+    media_assets: list[dict] = []
+    intel_built = False
+    if config is not None:
+        if getattr(config, "download_media", False):
+            try:
+                from ..media.downloader import download_media
+                media_assets = await download_media(
+                    fetcher, robots, db, config, final_url, ex.media)
+            except Exception:
+                media_assets = []
+        if getattr(config, "build_intel_report", False):
+            try:
+                from ..intel import build_intel_report
+                report, mc, sc, lc = build_intel_report(
+                    url=final_url, title=ex.title, category=cls.category,
+                    company=company, topic=topic, lang=ex.lang, meta=ex.meta,
+                    links=found_links, media_refs=ex.media,
+                    media_assets=media_assets, secrets=secrets_found, code=ex.code,
+                    timeline_ts=ex.timeline_ts)
+                db.upsert_intel_report(final_url, domain, report, mc, sc, lc)
+                intel_built = True
+            except Exception:
+                intel_built = False
+        # remember validators so an unchanged page can be skipped next time
+        try:
+            db.set_http_cache(final_url, getattr(res, "etag", None),
+                              getattr(res, "last_modified", None), content_hash)
+        except Exception:
+            pass
 
     return ProcessResult(
         url=final_url,
@@ -169,4 +284,11 @@ async def process_url(
         media=ex.media,
         discovered=discovered,
         links=found_links,
+        company=company,
+        topic=topic,
+        lang=ex.lang,
+        secrets=secrets_found,
+        media_assets=media_assets,
+        code=ex.code,
+        intel=intel_built,
     )

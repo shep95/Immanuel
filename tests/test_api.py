@@ -69,3 +69,45 @@ def test_export(client):
     r = c.get("/v1/export", headers={"X-API-Key": key})
     assert r.status_code == 200 and r.json()["count"] == 1
     assert "content" in r.json()["items"][0]
+
+
+def _seed_org_item(db, h, company, topic):
+    import time
+    db.add_item({
+        "content_hash": h, "url": f"https://ex.com/{h}", "source_domain": "ex.com",
+        "title": "t", "content": "c", "excerpt": "c", "media": [],
+        "category": "public_fact", "category_confidence": 0.8, "signals": [],
+        "epistemic_status": "observation", "collector": "live",
+        "company": company, "topic": topic, "meta": {}, "code": [],
+        "secrets_count": 0, "fetched_at": time.time(),
+    })
+
+
+def test_companies_and_topics(client):
+    c, db = client
+    _seed_org_item(db, "sha256:1", "Acme", "technology")
+    _seed_org_item(db, "sha256:2", "Acme", "technology")
+    key = generate_api_key(db, owner="tester")
+    rc = c.get("/v1/companies", headers={"X-API-Key": key})
+    assert rc.status_code == 200
+    assert rc.json()["companies"][0]["company"] == "Acme"
+    rt = c.get("/v1/topics", headers={"X-API-Key": key})
+    assert rt.json()["topics"][0]["topic"] == "technology"
+
+
+def test_patterns_endpoint(client):
+    c, db = client
+    key = generate_api_key(db, owner="tester")
+    r = c.get("/v1/patterns", headers={"X-API-Key": key})
+    assert r.status_code == 200 and "patterns" in r.json()
+
+
+def test_secrets_requires_admin(client):
+    c, db = client
+    read_key = generate_api_key(db, owner="tester", scopes="read")
+    assert c.get("/v1/secrets", headers={"X-API-Key": read_key}).status_code == 403
+    admin_key = generate_api_key(db, owner="admin", scopes="read admin")
+    db.add_secret("https://ex.com/x", "ex.com", "google_api_key", "AIza…wxyz",
+                  "sha256:1", "ctx", "high")
+    r = c.get("/v1/secrets", headers={"X-API-Key": admin_key})
+    assert r.status_code == 200 and r.json()["count"] == 1

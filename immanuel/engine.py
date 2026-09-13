@@ -203,6 +203,7 @@ class Engine:
                         res = await process_url(
                             src["url"], fetcher, robots, self.db,
                             max_links=cfg.max_links_per_page, collector=collector,
+                            config=cfg,
                         )
                         self.stats["processed"] += 1
                         self.stats["discovered"] += res.discovered
@@ -217,6 +218,9 @@ class Engine:
                         # publish new pages and updates to Discord
                         if cfg.publish_to_discord and (res.is_new_page or res.is_update):
                             self._emit(res.event())
+                        if cfg.publish_to_discord and res.secrets:
+                            self._emit({"kind": "secrets", "url": res.url,
+                                        "domain": res.domain, "secrets": res.secrets})
                         ok = res.stored or res.unchanged or res.is_new_page or res.is_update
                         self.db.mark_source_crawled(src["id"], ok=ok)
                     except Exception:

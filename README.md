@@ -78,6 +78,52 @@ It's designed to be hosted on **Railway** as a single service.
 - **The API** lets you (or your users' LLMs/platforms) query the knowledge base with an
   API key generated from Discord.
 
+### Deep acquisition (scrape, don't just link)
+
+With `DEEP_EXTRACT=true` (default) every page is **fully scraped**, not merely linked:
+
+- **Text + full metadata + code** — all `<meta>` tags, OpenGraph/Twitter cards, JSON-LD,
+  `lang`, and code assets (script/stylesheet/inline JSON-LD) are captured per item.
+- **Exposed API keys / secrets** (`SCAN_SECRETS=true`) — a deterministic (regex + entropy)
+  scanner flags secrets left in public page source. Findings are **masked** (raw value is
+  never stored — only a sha256 fingerprint + preview) and routed to a **private admin-only**
+  `#asherin-api-keys` channel (`/setup_secrets_channel`). Read them via `GET /v1/secrets`
+  with an **admin** key (`/adminkey`).
+- **Media download & import** (`DOWNLOAD_MEDIA=true`) — images/audio/video are downloaded to
+  a content-addressed store, deduped by hash, with open image metadata (dimensions + EXIF/GPS
+  when `Pillow` is installed).
+- **YouTube → transcripts + thumbnails** (`ENABLE_YOUTUBE=true`) — YouTube links are converted
+  to **transcripts** (needs the optional `youtube-transcript-api`) and their **thumbnails** are
+  imported.
+- **Intel data-report** (`BUILD_INTEL_REPORT=true`) — per page, Immanuel compiles a report of
+  the open metadata, the link/media graph, and any secrets found — the raw material for a
+  domain-wide **10-way hop** (`MAX_HOPS`) across every connected page and data source.
+- **Organize by company / topic** (`ORGANIZE_BY=company|topic|epistemic`) — each data topic
+  (or company) gets its **own channel/category**, created on demand up to `MAX_DYNAMIC_CHANNELS`.
+- **Global, every-country coverage** — the bootstrap seed set spans multilingual Wikipedias,
+  regional news, and international government/open-data portals so it isn't US/big-corp only.
+- **Incremental / no re-collect** — a persistent HTTP ledger stores each page's ETag /
+  Last-Modified. If the algorithm is turned off and back on, conditional GETs mean a page is
+  **only re-collected when it actually changed** (HTTP 304 = skip).
+
+### asherin.eng — the search engine
+
+`/setup_asherin_eng` creates `#asherin-eng`; `/search <query>` (with optional `category` /
+`company` / `topic` filters) queries everything collected — a real working-workflow search
+engine over your own corpus. Same data is available at `GET /v1/search`.
+
+### Pattern Forge — the second, non-AI algorithm (24/7)
+
+A separate **deterministic** engine runs alongside the crawler. It does **not** pile up facts;
+it learns **patterns**: `experience → outcome → cause → abstract mechanism → formalize →
+test → scope → store → retrieve → adapt`. Each pattern is a Universal Pattern Object
+(identity, domain, trigger, mechanism, invariants, evidence, confidence, failure modes,
+tests, scope, lifecycle…) and moves through a lifecycle
+(`candidate → testing → validated → active → deprecated → retired`) so untested strategies
+stay hypotheses. See `/patterns`, `GET /v1/patterns`, and **`/skills-download`** to export
+all learned pattern skills as a `.txt` file. The framework "brains" this implements live in
+[`docs/patternforge/`](docs/patternforge/).
+
 ## Discord commands
 
 | Command | Who | What it does |
@@ -97,6 +143,13 @@ It's designed to be hosted on **Railway** as a single service.
 | `/create_channel <name> [category]` | admin | Create a new text channel |
 | `/rename_channel <channel> <new_name>` | admin | Rename a channel |
 | `/set_channel_perms <channel> <role> <can_view>` | admin | Allow/deny a role from viewing a channel |
+| `/search <query> [category] [company] [topic]` | anyone | **asherin.eng** — query everything collected, like a working search engine |
+| `/setup_asherin_eng` | admin | Create the `#asherin-eng` search channel |
+| `/patterns` | anyone | Show the Pattern Forge library (learned patterns + lifecycle) |
+| `/skills-download [only_validated]` | anyone | Download all learned pattern skills as a `.txt` file |
+| `/intel` | anyone | Show the most recent intel data-reports |
+| `/setup_secrets_channel` | admin | Create the **private** `#asherin-api-keys` channel for exposed-secret alerts |
+| `/adminkey` | admin | Generate an **admin** API key (unlocks the exposed-secrets endpoint) |
 
 "admin" = a Discord user with the **Administrator** permission, or a user ID listed in
 `MASTER_ADMIN_IDS`.
@@ -115,8 +168,14 @@ open https://<your-app>.up.railway.app/docs
 ```
 
 Endpoints: `GET /health` (public) · `GET /v1/status` · `GET /v1/categories` ·
-`GET /v1/search` · `GET /v1/items/{id}` · `GET /v1/versions?url=…` (page history +
-timestamps) · `GET /v1/updates` (recent changes) · `GET /v1/export`.
+`GET /v1/search` (now also filters `&company=` and `&topic=`) · `GET /v1/items/{id}` ·
+`GET /v1/versions?url=…` (page history + timestamps) · `GET /v1/updates` (recent
+changes) · `GET /v1/export`.
+
+Deep-acquisition + Pattern Forge endpoints: `GET /v1/companies` · `GET /v1/topics` ·
+`GET /v1/intel` (recent reports) · `GET /v1/intel/report?url=…` · `GET /v1/patterns`
+(learned patterns) · `GET /v1/patterns/export` (skills as text) ·
+`GET /v1/secrets` (**admin key required** — masked exposed-secret findings).
 
 ## How many crawler-agents do I need?
 
@@ -318,8 +377,20 @@ No untested design is claimed as guaranteed to work.
 
 ```
 immanuel/
+├── immanuel/
+│   ├── crawler/           # fetcher, extract (deep), secrets scanner, pipeline, swarm
+│   ├── media/             # media downloader + YouTube transcript/thumbnail import
+│   ├── patternforge/      # non-AI Pattern Forge: ontology, forge (miners), skills, runner
+│   ├── discordbot/        # bot commands + publisher (dynamic channels, secrets channel)
+│   ├── api/               # FastAPI app (search, intel, patterns, companies, secrets)
+│   ├── intel.py           # intel data-report builder
+│   ├── organize.py        # deterministic company/topic classifier
+│   ├── engine.py · db.py · config.py · main.py
+├── docs/
+│   ├── patternforge/      # the Pattern Forge "brains" (framework this implements)
+│   └── …                  # the full engineering specification
+├── requirements.txt · requirements-optional.txt   # optional = Pillow, youtube-transcript-api
 ├── README.md              # this file — overview + spec index
-├── docs/                  # the full engineering specification
 └── LICENSE
 ```
 

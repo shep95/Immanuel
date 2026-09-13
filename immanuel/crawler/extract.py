@@ -32,6 +32,9 @@ class Extracted:
     media: list[dict] = field(default_factory=list)
     kind: str = "unknown"        # html|feed|json|text|media|binary
     timeline_ts: str | None = None
+    meta: dict = field(default_factory=dict)   # full page metadata
+    code: list[dict] = field(default_factory=list)  # code assets found on the page
+    lang: str | None = None
 
     @property
     def content_hash(self) -> str:
@@ -125,9 +128,68 @@ def _try_feed(url: str, body: bytes) -> Extracted | None:
 
 def _extract_html(url: str, body: bytes) -> Extracted:
     soup = BeautifulSoup(body, "lxml")
-    for tag in soup(["script", "style", "noscript"]):
-        tag.decompose()
 
+    # ---- metadata (harvest BEFORE stripping scripts/styles) ----------------
+    meta: dict[str, str] = {}
+    for m in soup.find_all("meta"):
+        key = m.get("name") or m.get("property") or m.get("itemprop") or m.get("http-equiv")
+        content = m.get("content")
+        if key and content:
+            meta.setdefault(key.strip().lower(), content.strip()[:600])
+        if m.get("charset"):
+            meta.setdefault("charset", m.get("charset").strip())
+    html_tag = soup.find("html")
+    lang = (html_tag.get("lang") if html_tag else None) or meta.get("og:locale")
+    canonical = soup.find("link", rel="canonical")
+    if canonical and canonical.get("href"):
+        meta["canonical"] = urljoin(url, canonical["href"])
+
+    # ---- code assets (scripts, stylesheets, inline JS, JSON-LD) ------------
+    code: list[dict] = []
+    for s in soup.find_all("script"):
+        src = s.get("src")
+        stype = (s.get("type") or "").lower()
+        if src:
+            code.append({"type": "js", "url": urljoin(url, src)})
+        elif "ld+json" in stype:
+            snippet = (s.string or s.get_text() or "").strip()
+            if snippet:
+                code.append({"type": "json-ld", "snippet": snippet[:4000]})
+        elif "json" in stype:
+            snippet = (s.string or s.get_text() or "").strip()
+            if snippet:
+                code.append({"type": "json", "snippet": snippet[:4000]})
+        else:
+            snippet = (s.string or s.get_text() or "").strip()
+            if snippet:
+                code.append({"type": "inline-js", "snippet": snippet[:4000]})
+    for link in soup.find_all("link", href=True):
+        rels = " ".join(link.get("rel") or []).lower()
+        if "stylesheet" in rels:
+            code.append({"type": "css", "url": urljoin(url, link["href"])})
+
+    # ---- media references (img/video/audio/source + og/twitter images) -----
+    media: list[dict] = []
+    for img in soup.find_all("img"):
+        src = img.get("src") or img.get("data-src")
+        if src:
+            media.append({"type": "image", "url": urljoin(url, src),
+                          "alt": (img.get("alt") or "")[:200]})
+        for cand in (img.get("srcset") or "").split(","):
+            u = cand.strip().split(" ")[0]
+            if u:
+                media.append({"type": "image", "url": urljoin(url, u)})
+    for tag in soup.find_all(["video", "audio", "source"]):
+        src = tag.get("src")
+        if src:
+            mt = tag.name if tag.name in ("video", "audio") else "media"
+            media.append({"type": mt, "url": urljoin(url, src)})
+    for prop in ("og:image", "og:image:url", "twitter:image", "og:video"):
+        if meta.get(prop):
+            mt = "video" if "video" in prop else "image"
+            media.append({"type": mt, "url": urljoin(url, meta[prop])})
+
+    # ---- title, timeline, and clean text (now strip non-content tags) ------
     title = None
     if soup.title and soup.title.string:
         title = soup.title.string.strip()
@@ -135,45 +197,40 @@ def _extract_html(url: str, body: bytes) -> Extracted:
         h1 = soup.find("h1")
         if h1:
             title = h1.get_text(strip=True)
+    if not title:
+        title = meta.get("og:title")
 
-    # publication time from common meta tags
-    timeline_ts = None
-    for sel in [
-        ("meta", {"property": "article:published_time"}),
-        ("meta", {"name": "date"}),
-        ("meta", {"property": "og:updated_time"}),
-    ]:
-        tag = soup.find(*sel[:1], attrs=sel[1])
-        if tag and tag.get("content"):
-            timeline_ts = tag["content"]
-            break
+    timeline_ts = (meta.get("article:published_time") or meta.get("date")
+                   or meta.get("og:updated_time") or meta.get("last-modified"))
 
+    for tag in soup(["script", "style", "noscript"]):
+        tag.decompose()
     text = soup.get_text(separator=" ", strip=True)
 
-    links, media = [], []
+    links = []
     for a in soup.find_all("a", href=True):
         href = urljoin(url, a["href"])
         if href.startswith(("http://", "https://")):
             links.append(href)
-    for img in soup.find_all("img", src=True):
-        media.append({"type": "image", "url": urljoin(url, img["src"])})
-    for source in soup.find_all(["video", "audio"]):
-        src = source.get("src")
-        if src:
-            media.append({"type": source.name, "url": urljoin(url, src)})
 
-    # de-dup links preserving order
-    seen, uniq = set(), []
-    for l in links:
-        if l not in seen:
-            seen.add(l)
-            uniq.append(l)
+    # de-dup links + media preserving order
+    def _dedup(seq, key):
+        seen, out = set(), []
+        for it in seq:
+            k = key(it)
+            if k and k not in seen:
+                seen.add(k)
+                out.append(it)
+        return out
 
     return Extracted(
         title=title,
         text=text[:50000],
-        links=uniq,
-        media=media[:50],
+        links=_dedup(links, lambda x: x),
+        media=_dedup(media, lambda x: x["url"])[:80],
         kind="html",
         timeline_ts=timeline_ts,
+        meta=meta,
+        code=_dedup(code, lambda x: x.get("url") or x.get("snippet"))[:60],
+        lang=(lang.strip()[:20] if lang else None),
     )

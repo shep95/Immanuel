@@ -1,0 +1,11 @@
+# Optional capabilities. The deterministic core + tests never require these.
+# Install only if you enable the matching features.
+
+# DOWNLOAD_MEDIA=true  -> open image metadata (dimensions + EXIF/GPS)
+Pillow>=10.0
+
+# ENABLE_YOUTUBE=true  -> convert YouTube videos into transcripts
+youtube-transcript-api>=0.6
+
+# (optional) richer media/video handling if you extend the downloader
+yt-dlp>=2024.1

@@ -24,6 +24,10 @@ DATA_CHANNELS = [
     "private-rumors", "conspiracies",
 ]
 UPDATES_CHANNEL = "immanuel-updates"
+# Private admin channel where exposed API keys / secrets are reported.
+SECRETS_CHANNEL = "asherin-api-keys"
+# Category that holds the dynamic per-topic / per-company channels.
+ORGANIZED_CATEGORY = "🗂️ asherin channels"
 
 CATEGORY_COLORS = {
     "public_fact": 0x2ecc71,
@@ -105,6 +109,13 @@ class Publisher:
         emb.add_field(name="Category", value=DISPLAY.get(cat, cat), inline=True)
         emb.add_field(name="Domain", value=event.get("domain") or "-", inline=True)
         emb.add_field(name="Version", value=str(event.get("version_no", 1)), inline=True)
+        if event.get("company"):
+            emb.add_field(name="Company", value=str(event["company"])[:60], inline=True)
+        if event.get("topic"):
+            emb.add_field(name="Topic", value=str(event["topic"])[:60], inline=True)
+        if event.get("secrets_count"):
+            emb.add_field(name="⚠️ Secrets", value=str(event["secrets_count"]),
+                          inline=True)
         if event.get("timeline_ts"):
             emb.add_field(name="Source timestamp", value=str(event["timeline_ts"])[:100],
                           inline=False)
@@ -118,20 +129,116 @@ class Publisher:
         kind = event.get("kind")
         if kind == "update":
             await self._publish_update(event)
+        elif kind == "secrets":
+            await self._publish_secrets(event)
         else:
             await self._publish_new(event)
 
+    # -------------------------------------------------- dynamic organization
+    def _organize_by(self) -> str:
+        return getattr(self.config, "organize_by", "epistemic") or "epistemic"
+
+    def _dynamic_channel_name(self, event: dict) -> str | None:
+        """Channel name for the current organize_by mode (topic/company)."""
+        from ..organize import slugify
+        mode = self._organize_by()
+        if mode == "topic":
+            return "topic-" + slugify(event.get("topic") or "general")
+        if mode == "company":
+            return "co-" + slugify(event.get("company") or "misc")
+        return None
+
+    async def _ensure_dynamic_channel(self, name: str):
+        """Get-or-create a per-topic/per-company channel (bounded by config)."""
+        existing = await self._get_channel(name)
+        if existing is not None:
+            return existing
+        guild = self._guild()
+        if guild is None:
+            return None
+        # guardrail so we never blow past Discord channel limits
+        cap = getattr(self.config, "max_dynamic_channels", 180)
+        made = int(self.db.get_state("dynamic_channel_count", "0") or "0")
+        if made >= cap:
+            return await self._get_channel(DATA_CHANNELS[0])  # fall back
+        chan = discord.utils.get(guild.text_channels, name=name)
+        if chan is None:
+            category = discord.utils.get(guild.categories, name=ORGANIZED_CATEGORY)
+            if category is None:
+                try:
+                    category = await guild.create_category(ORGANIZED_CATEGORY)
+                except discord.Forbidden:
+                    category = None
+            try:
+                chan = await guild.create_text_channel(name, category=category)
+            except discord.Forbidden:
+                return None
+            self.db.set_state("dynamic_channel_count", str(made + 1))
+        self._chan_cache[name] = chan.id
+        self.db.set_state(f"chan_{name}", str(chan.id))
+        return chan
+
     async def _publish_new(self, event: dict) -> None:
-        cat = event.get("category") or "unknown"
-        chan_name = DISPLAY.get(cat, "unknown")
-        if chan_name not in DATA_CHANNELS:
-            return
-        channel = await self._get_channel(chan_name)
+        if self._organize_by() in ("topic", "company"):
+            name = self._dynamic_channel_name(event)
+            channel = await self._ensure_dynamic_channel(name) if name else None
+        else:
+            cat = event.get("category") or "unknown"
+            chan_name = DISPLAY.get(cat, "unknown")
+            if chan_name not in DATA_CHANNELS:
+                return
+            channel = await self._get_channel(chan_name)
         if channel is not None:
             try:
                 await channel.send(embed=self._embed_for(event))
             except discord.HTTPException:
                 await asyncio.sleep(2)
+
+    async def _publish_secrets(self, event: dict) -> None:
+        """Post exposed-secret findings into the PRIVATE admin api-key channel."""
+        channel = await self._get_channel(SECRETS_CHANNEL)
+        if channel is None:
+            channel = await self.ensure_secrets_channel()
+        if channel is None:
+            return
+        findings = event.get("secrets") or []
+        emb = discord.Embed(
+            title=f"🔐 Exposed credentials on {event.get('domain') or 'a page'}",
+            url=event.get("url"), color=0xc0392b,
+        )
+        emb.description = (event.get("url") or "")[:400]
+        for s in findings[:15]:
+            emb.add_field(
+                name=f"{s.get('severity','?')} · {s.get('type')}",
+                value=f"`{s.get('masked')}`\n{(s.get('context') or '')[:120]}",
+                inline=False,
+            )
+        emb.set_footer(text="asherin • values masked; raw secret never stored")
+        try:
+            await channel.send(embed=emb)
+        except discord.HTTPException:
+            await asyncio.sleep(2)
+
+    async def ensure_secrets_channel(self):
+        """Create the private admin-only api-key/secrets channel."""
+        guild = self._guild()
+        if guild is None:
+            return None
+        chan = discord.utils.get(guild.text_channels, name=SECRETS_CHANNEL)
+        if chan is None:
+            overwrites = {
+                guild.default_role: discord.PermissionOverwrite(view_channel=False),
+                guild.me: discord.PermissionOverwrite(view_channel=True,
+                                                      send_messages=True),
+            }
+            try:
+                chan = await guild.create_text_channel(
+                    SECRETS_CHANNEL, overwrites=overwrites)
+            except discord.Forbidden:
+                return None
+        self._chan_cache[SECRETS_CHANNEL] = chan.id
+        self.db.set_state(f"chan_{SECRETS_CHANNEL}", str(chan.id))
+        return chan
 
     async def _publish_update(self, event: dict) -> None:
         channel = await self._get_channel(UPDATES_CHANNEL)

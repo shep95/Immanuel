@@ -85,6 +85,33 @@ class Config:
     enable_wayback: bool = False
     wayback_max_snapshots: int = 25
 
+    # --- Deep acquisition (scrape text + metadata + code + media, not just links) ---
+    deep_extract: bool = True            # capture full page metadata + code assets
+    scan_secrets: bool = True            # detect exposed API keys / tokens on public pages
+    build_intel_report: bool = True      # aggregate open metadata into an intel report
+
+    # --- Media download & import (download files, not just reference them) ---
+    download_media: bool = False         # download+store media bytes (uses disk)
+    media_store_path: str = "./data/media"
+    max_media_bytes: int = 25_000_000    # per-file cap when downloading media
+    max_media_per_page: int = 20
+    media_types: set[str] = field(default_factory=lambda: {"image", "audio", "video"})
+    # YouTube: convert videos -> transcripts, import thumbnails (optional deps)
+    enable_youtube: bool = True
+    youtube_langs: list[str] = field(default_factory=lambda: ["en"])
+
+    # --- Organization: per-company / per-topic channels & categories ---
+    # "epistemic" (default 5 buckets) | "topic" | "company"
+    organize_by: str = "epistemic"
+    max_dynamic_channels: int = 180      # guardrail (Discord: 500/guild, 50/category)
+
+    # --- Pattern Forge (second, non-AI algorithm that learns patterns 24/7) ---
+    enable_pattern_forge: bool = True
+    pattern_forge_interval_seconds: float = 300.0   # how often the forge runs a pass
+    pattern_min_evidence: int = 3        # observations before a candidate is testable
+    pattern_min_confidence: float = 0.6  # promote CANDIDATE -> VALIDATED at/above this
+    skills_export_path: str = "./data/skills"
+
     @classmethod
     def from_env(cls) -> "Config":
         guild = os.getenv("DISCORD_GUILD_ID", "").strip()
@@ -126,4 +153,23 @@ class Config:
             publish_to_discord=_bool("PUBLISH_TO_DISCORD", True),
             enable_wayback=_bool("ENABLE_WAYBACK", False),
             wayback_max_snapshots=_int("WAYBACK_MAX_SNAPSHOTS", 25),
+            deep_extract=_bool("DEEP_EXTRACT", True),
+            scan_secrets=_bool("SCAN_SECRETS", True),
+            build_intel_report=_bool("BUILD_INTEL_REPORT", True),
+            download_media=_bool("DOWNLOAD_MEDIA", False),
+            media_store_path=os.getenv("MEDIA_STORE_PATH", "./data/media").strip(),
+            max_media_bytes=_int("MAX_MEDIA_BYTES", 25_000_000),
+            max_media_per_page=_int("MAX_MEDIA_PER_PAGE", 20),
+            media_types=set(_csv("MEDIA_TYPES")) or {"image", "audio", "video"},
+            enable_youtube=_bool("ENABLE_YOUTUBE", True),
+            youtube_langs=_csv("YOUTUBE_LANGS") or ["en"],
+            organize_by=(os.getenv("ORGANIZE_BY", "epistemic").strip().lower()
+                         or "epistemic"),
+            max_dynamic_channels=_int("MAX_DYNAMIC_CHANNELS", 180),
+            enable_pattern_forge=_bool("ENABLE_PATTERN_FORGE", True),
+            pattern_forge_interval_seconds=float(
+                _int("PATTERN_FORGE_INTERVAL_SECONDS", 300)),
+            pattern_min_evidence=_int("PATTERN_MIN_EVIDENCE", 3),
+            pattern_min_confidence=float(_int("PATTERN_MIN_CONFIDENCE_PCT", 60)) / 100.0,
+            skills_export_path=os.getenv("SKILLS_EXPORT_PATH", "./data/skills").strip(),
         )

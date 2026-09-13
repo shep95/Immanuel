@@ -18,6 +18,8 @@ class FetchResult:
     body: bytes
     ok: bool
     error: str | None = None
+    etag: str | None = None
+    last_modified: str | None = None
 
 
 class Fetcher:
@@ -64,15 +66,27 @@ class Fetcher:
             await asyncio.sleep(wait)
         self._last_hit[domain] = time.time()
 
-    async def fetch(self, url: str) -> FetchResult:
+    async def fetch(self, url: str,
+                    extra_headers: dict | None = None) -> FetchResult:
         domain = urlparse(url).netloc
         if not domain:
             return FetchResult(url, url, 0, "", b"", False, "invalid url")
         async with self._lock_for(domain):
             await self._throttle(domain)
             try:
-                async with self.client.stream("GET", url) as resp:
+                async with self.client.stream(
+                    "GET", url, headers=extra_headers or None
+                ) as resp:
                     content_type = resp.headers.get("content-type", "")
+                    etag = resp.headers.get("etag")
+                    last_modified = resp.headers.get("last-modified")
+                    # 304 Not Modified: no body to read (conditional GET hit)
+                    if resp.status_code == 304:
+                        return FetchResult(
+                            url=url, final_url=str(resp.url), status=304,
+                            content_type=content_type, body=b"", ok=False,
+                            error="HTTP 304", etag=etag, last_modified=last_modified,
+                        )
                     chunks, total = [], 0
                     async for chunk in resp.aiter_bytes():
                         total += len(chunk)
@@ -89,6 +103,8 @@ class Fetcher:
                         body=body,
                         ok=ok,
                         error=None if ok else f"HTTP {resp.status_code}",
+                        etag=etag,
+                        last_modified=last_modified,
                     )
             except Exception as e:  # network/timeout/etc.
                 return FetchResult(url, url, 0, "", b"", False, str(e))

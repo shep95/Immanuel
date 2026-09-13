@@ -30,7 +30,7 @@ GRAPH = {
 
 
 async def fake_process_url(url, fetcher, robots, db, max_links=20,
-                           collector="live", discover=True):
+                           collector="live", discover=True, config=None):
     links = GRAPH.get(url, [])
     # register discovered links as sources, like the real pipeline does
     if discover:

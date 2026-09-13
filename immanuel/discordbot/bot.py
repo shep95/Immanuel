@@ -29,7 +29,7 @@ def _is_admin(interaction: discord.Interaction, config: Config) -> bool:
 
 
 def create_bot(db: Database, engine: Engine, config: Config,
-               publish_queue=None) -> commands.Bot:
+               publish_queue=None, forge=None) -> commands.Bot:
     intents = discord.Intents.default()
     intents.members = True  # required for join/leave logging (enable in dev portal)
 
@@ -153,7 +153,169 @@ def create_bot(db: Database, engine: Engine, config: Config,
         if cats:
             lines = [f'• {DISPLAY.get(k, k)}: {v}' for k, v in sorted(cats.items())]
             emb.add_field(name="By category", value="\n".join(lines), inline=False)
+        # deep-acquisition + pattern-forge extras
+        emb.add_field(name="Secrets found", value=db.count_secrets(), inline=True)
+        emb.add_field(name="Intel reports", value=db.count_intel(), inline=True)
+        emb.add_field(name="Media saved", value=db.count_media_assets(), inline=True)
+        if forge is not None:
+            fs = forge.snapshot()
+            emb.add_field(
+                name="Pattern Forge",
+                value=f'{fs["patterns_total"]} patterns '
+                      f'(✅ {fs["validated"]} validated, {fs["active"]} active) '
+                      f'· {fs["passes"]} passes',
+                inline=False)
         await interaction.response.send_message(embed=emb)
+
+    # -------------------------------------------------- asherin.eng search
+    @tree.command(name="search",
+                  description="Search the collected knowledge (asherin.eng search engine).")
+    @app_commands.describe(query="what to search for",
+                           category="optional category filter",
+                           company="optional company filter",
+                           topic="optional topic filter")
+    async def search_cmd(interaction: discord.Interaction, query: str,
+                         category: str | None = None, company: str | None = None,
+                         topic: str | None = None) -> None:
+        await interaction.response.defer(thinking=True)
+        rows = await asyncio.to_thread(
+            db.search_items, query, category, None, company, topic, 10, 0)
+        if not rows:
+            await interaction.followup.send(f"🔍 No results for **{query}**.")
+            return
+        emb = discord.Embed(title=f"🔍 asherin.eng — {query}", color=0x1abc9c)
+        for r in rows[:10]:
+            meta = []
+            if r.get("company"):
+                meta.append(r["company"])
+            if r.get("topic"):
+                meta.append(r["topic"])
+            meta.append(DISPLAY.get(r.get("category") or "unknown", "unknown"))
+            emb.add_field(
+                name=(r.get("title") or r["url"])[:200],
+                value=f'{r["url"][:120]}\n_{" · ".join(meta)}_',
+                inline=False)
+        emb.set_footer(text=f"{len(rows)} result(s) • use the API /v1/search for more")
+        await interaction.followup.send(embed=emb)
+
+    @tree.command(name="setup_asherin_eng",
+                  description="Create the asherin-eng search channel.")
+    async def setup_asherin_eng(interaction: discord.Interaction) -> None:
+        if not await admin_only(interaction):
+            return
+        guild = interaction.guild
+        if guild is None:
+            await interaction.response.send_message("Run this in a server.", ephemeral=True)
+            return
+        chan = discord.utils.get(guild.text_channels, name="asherin-eng")
+        if chan is None:
+            try:
+                chan = await guild.create_text_channel("asherin-eng")
+            except discord.Forbidden:
+                await interaction.response.send_message(
+                    "❌ I need **Manage Channels**.", ephemeral=True)
+                return
+        await asyncio.to_thread(db.set_state, "asherin_eng_channel_id", str(chan.id))
+        await interaction.response.send_message(
+            f"✅ {chan.mention} is ready. Use `/search <query>` here (or anywhere) "
+            "to query everything collected — like a working search engine.")
+
+    # ---------------------------------------------------- pattern forge
+    @tree.command(name="patterns",
+                  description="Show the Pattern Forge library (learned patterns).")
+    async def patterns_cmd(interaction: discord.Interaction) -> None:
+        rows = await asyncio.to_thread(db.list_patterns, None, 10)
+        fs = forge.snapshot() if forge is not None else {
+            "patterns_total": len(rows), "validated": 0, "active": 0, "passes": 0}
+        emb = discord.Embed(
+            title="🧠 Pattern Forge — learned patterns",
+            description=f'{fs["patterns_total"]} patterns · '
+                        f'✅ {fs["validated"]} validated · {fs["active"]} active · '
+                        f'{fs["passes"]} passes',
+            color=0x9b59b6)
+        for p in rows[:10]:
+            emb.add_field(
+                name=f'[{p["status"]}] {p["name"]}'[:230],
+                value=f'{p.get("mechanism","")[:180]}\n'
+                      f'_confidence {p.get("confidence",0):.2f} · '
+                      f'evidence {p.get("evidence_count",0)}_',
+                inline=False)
+        if not rows:
+            emb.add_field(name="—",
+                          value="no patterns yet; the forge learns as data arrives.",
+                          inline=False)
+        await interaction.response.send_message(embed=emb)
+
+    @tree.command(name="skills-download",
+                  description="Download all learned pattern skills as a .txt file.")
+    @app_commands.describe(only_validated="only export validated/active patterns")
+    async def skills_download(interaction: discord.Interaction,
+                              only_validated: bool = False) -> None:
+        await interaction.response.defer(thinking=True)
+        from ..patternforge.skills import render_skills
+        text = await asyncio.to_thread(render_skills, db, only_validated=only_validated)
+        data = text.encode("utf-8")
+        if len(data) <= DISCORD_FILE_LIMIT:
+            file = discord.File(io.BytesIO(data), filename="asherin_skills.txt")
+            await interaction.followup.send(
+                f"🧠 Exported the Pattern Forge skill library "
+                f"({db.count_patterns()} patterns).", file=file)
+        else:
+            file = discord.File(io.BytesIO(data[:DISCORD_FILE_LIMIT]),
+                                filename="asherin_skills_partial.txt")
+            await interaction.followup.send(
+                "🧠 Skill library is large — sending a partial file. "
+                "Full export: `GET /v1/patterns/export` with your API key.", file=file)
+
+    # ---------------------------------------------------- intel reports
+    @tree.command(name="intel",
+                  description="Show the most recent intel data-reports.")
+    async def intel_cmd(interaction: discord.Interaction) -> None:
+        rows = await asyncio.to_thread(db.recent_intel, 10)
+        if not rows:
+            await interaction.response.send_message("No intel reports yet.")
+            return
+        lines = []
+        for r in rows:
+            lines.append(
+                f'• {r["url"][:80]} — {r["links_count"]} links, '
+                f'{r["media_count"]} media, ⚠️ {r["secrets_count"]} secrets')
+        await interaction.response.send_message(
+            "**Recent intel reports:**\n" + "\n".join(lines)[:1900])
+
+    @tree.command(name="setup_secrets_channel",
+                  description="Create the PRIVATE admin api-key/secrets channel.")
+    async def setup_secrets_channel(interaction: discord.Interaction) -> None:
+        if not await admin_only(interaction):
+            return
+        if publisher is None:
+            await interaction.response.send_message(
+                "Publishing is disabled for this deployment.", ephemeral=True)
+            return
+        await interaction.response.defer(thinking=True)
+        chan = await publisher.ensure_secrets_channel()
+        if chan is None:
+            await interaction.followup.send(
+                "❌ Could not create it — I need **Manage Channels**.")
+            return
+        await interaction.followup.send(
+            f"✅ Private api-key channel ready: {chan.mention}. "
+            "Exposed API keys / secrets found on public pages are reported here "
+            "(admins only; values masked).")
+
+    @tree.command(name="adminkey",
+                  description="Generate an ADMIN API key (access exposed-secret endpoints).")
+    async def adminkey(interaction: discord.Interaction) -> None:
+        if not await admin_only(interaction):
+            return
+        owner = f"{interaction.user} ({interaction.user.id})"
+        raw = await asyncio.to_thread(generate_api_key, db, owner, "read admin")
+        base = config.public_base_url or "http://<your-deployment>"
+        await interaction.response.send_message(
+            "🔑 **Your ADMIN API key (shown once):**\n"
+            f"```{raw}```\n"
+            f"Admin-only: `GET {base}/v1/secrets` (exposed keys, masked).",
+            ephemeral=True)
 
     # ------------------------------------------------------ source commands
     @tree.command(name="addsource", description="Add a seed URL for the crawler to collect.")

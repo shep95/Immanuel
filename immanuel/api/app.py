@@ -15,13 +15,14 @@ from ..db import Database
 from ..keys import verify_api_key
 
 
-def create_app(db: Database, engine: Any = None) -> FastAPI:
+def create_app(db: Database, engine: Any = None, forge: Any = None) -> FastAPI:
     app = FastAPI(
         title="Immanuel API",
-        version="0.1.0",
-        description="Read-only API over Immanuel's collected knowledge base. "
-        "Authenticate with an API key generated via the Discord /apikey command "
-        "(header: `X-API-Key: imk_...` or `Authorization: Bearer imk_...`).",
+        version="0.2.0",
+        description="Read-only API over Immanuel's collected knowledge base + the "
+        "asherin.eng search engine and Pattern Forge library. Authenticate with an "
+        "API key from the Discord /apikey command (header: `X-API-Key: imk_...` or "
+        "`Authorization: Bearer imk_...`).",
     )
 
     def require_key(
@@ -34,6 +35,12 @@ def create_app(db: Database, engine: Any = None) -> FastAPI:
         rec = verify_api_key(db, raw)
         if not rec:
             raise HTTPException(status_code=401, detail="invalid or missing API key")
+        return rec
+
+    def require_admin(rec: dict = Depends(require_key)) -> dict:
+        if "admin" not in (rec.get("scopes") or ""):
+            raise HTTPException(status_code=403,
+                                detail="admin API key required (generate with /adminkey)")
         return rec
 
     # ---- public: health (used by Railway healthcheck) --------------------
@@ -65,6 +72,8 @@ def create_app(db: Database, engine: Any = None) -> FastAPI:
         q: str | None = Query(default=None, description="text query"),
         category: str | None = Query(default=None),
         domain: str | None = Query(default=None),
+        company: str | None = Query(default=None),
+        topic: str | None = Query(default=None),
         limit: int = Query(default=50, ge=1, le=500),
         offset: int = Query(default=0, ge=0),
     ) -> dict:
@@ -72,8 +81,54 @@ def create_app(db: Database, engine: Any = None) -> FastAPI:
             raise HTTPException(status_code=400,
                                 detail=f"category must be one of {list(CATEGORIES)}")
         rows = db.search_items(query=q, category=category, domain=domain,
+                               company=company, topic=topic,
                                limit=limit, offset=offset)
         return {"count": len(rows), "results": [_public_item(r) for r in rows]}
+
+    # ---- organization: companies + topics --------------------------------
+    @app.get("/v1/companies")
+    def companies(_: dict = Depends(require_key),
+                  limit: int = Query(default=200, ge=1, le=500)) -> dict:
+        return {"companies": db.list_companies(limit)}
+
+    @app.get("/v1/topics")
+    def topics(_: dict = Depends(require_key)) -> dict:
+        return {"topics": db.list_topics()}
+
+    # ---- intel data-reports ----------------------------------------------
+    @app.get("/v1/intel")
+    def intel_list(_: dict = Depends(require_key),
+                   limit: int = Query(default=25, ge=1, le=200)) -> dict:
+        return {"reports": db.recent_intel(limit)}
+
+    @app.get("/v1/intel/report")
+    def intel_report(url: str = Query(...), _: dict = Depends(require_key)) -> dict:
+        rep = db.get_intel_report(url)
+        if not rep:
+            raise HTTPException(status_code=404, detail="no intel report for that url")
+        return rep
+
+    # ---- Pattern Forge library -------------------------------------------
+    @app.get("/v1/patterns")
+    def patterns(_: dict = Depends(require_key),
+                 status: str | None = Query(default=None),
+                 limit: int = Query(default=200, ge=1, le=1000)) -> dict:
+        rows = db.list_patterns(status=status, limit=limit)
+        forge_snap = forge.snapshot() if forge else {"patterns_total": len(rows)}
+        return {"count": len(rows), "forge": forge_snap, "patterns": rows}
+
+    @app.get("/v1/patterns/export")
+    def patterns_export(_: dict = Depends(require_key),
+                        only_validated: bool = Query(default=False)) -> JSONResponse:
+        from ..patternforge.skills import render_skills
+        text = render_skills(db, only_validated=only_validated)
+        return JSONResponse({"format": "text", "skills": text})
+
+    # ---- exposed secrets (ADMIN ONLY; values are masked) -----------------
+    @app.get("/v1/secrets")
+    def secrets(_: dict = Depends(require_admin),
+                limit: int = Query(default=50, ge=1, le=200)) -> dict:
+        return {"count": db.count_secrets(), "findings": db.recent_secrets(limit)}
 
     @app.get("/v1/items/{item_id}")
     def get_item(item_id: int, _: dict = Depends(require_key)) -> dict:
@@ -118,11 +173,15 @@ def _public_item(r: dict, full: bool = False) -> dict:
         "category_display": DISPLAY.get(r["category"] or "unknown", "unknown"),
         "confidence": r["category_confidence"],
         "epistemic_status": r["epistemic_status"],
+        "company": r.get("company"),
+        "topic": r.get("topic"),
+        "lang": r.get("lang"),
         "timeline_ts": r["timeline_ts"],
         "collector": r["collector"],
         "fetched_at": r["fetched_at"],
         "excerpt": r["excerpt"],
         "media": r["media"],
+        "secrets_count": r.get("secrets_count", 0),
     }
     if full:
         out["content"] = r["content"]

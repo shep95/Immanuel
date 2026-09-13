@@ -1,0 +1,137 @@
+You’re describing an adaptive reasoning system that learns which problem-solving structures work for a particular user and codebase, then creates/reuses those structures automatically.
+There are two different interpretations.
+What you’re actually asking for
+When you say:
+“finds bugs and creates custom architecture patterns for reasoning patterns, debugging/coding patterns, thought patterns, thinking patterns… and overall the system auto-adjusts itself for the user and their codebase”
+I’d interpret your intended system roughly as:
+Problem → observe context → reason → discover useful pattern → formalize pattern → reuse/adapt pattern → evaluate results → evolve the pattern
+So, for example, while debugging, the AI might discover:
+“In this codebase, auth failures frequently come from state being initialized before session hydration.”
+Instead of merely fixing that bug, the system could turn what it learned into a reusable debugging/reasoning architecture:
+
+Auth-State Debugging Pattern
+
+Trigger:
+    Authentication/state inconsistency
+
+Reasoning procedure:
+    1. Trace session creation
+    2. Trace hydration timing
+    3. Identify state consumers
+    4. Compare initialization order
+    5. Inspect async boundaries
+    6. Test race-condition hypothesis
+
+Codebase-specific knowledge:
+    - Zustand stores
+    - Next.js middleware
+    - Supabase auth
+    - Existing initialization conventions
+
+Validation:
+    Run auth tests + reproduce original failure
+Then future problems can cause that architecture to be retrieved, modified, combined with another pattern, or replaced.
+And you don't seem to mean only coding patterns such as Factory, Observer, MVC, etc. You mean patterns at several levels:
+reasoning patterns ↔ debugging strategies ↔ coding patterns ↔ architectural patterns ↔ workflow patterns ↔ user-specific thinking patterns
+The important part is the meta-level adaptation: the AI isn't just solving problems; it's learning how it should solve problems in this environment.
+What an AI might mistakenly think you're asking for
+An AI could interpret “custom architecture patterns” much more conventionally:
+
+User reports bug
+       ↓
+AI searches repository
+       ↓
+AI identifies bug
+       ↓
+AI chooses a software design pattern
+       ↓
+AI modifies code
+       ↓
+AI runs tests
+It might therefore respond with things like:
+ “Use repository pattern here.” 
+ “Refactor this into MVC.” 
+ “Create a debugging agent.” 
+ “Store coding preferences in memory.” 
+ “Use chain-of-thought to debug.” 
+ “Learn the user's coding style.” 
+Those capture pieces of your idea, but miss the self-adapting reasoning layer.
+The distinction is:
+AI's likely interpretation: “Adapt the code it generates to the codebase.”
+versus
+Your apparent intention: “Adapt the architecture of the AI's problem-solving process itself to the user, problem history, and codebase—and allow it to construct reusable problem-solving patterns from experience.”
+That second idea is substantially more ambitious.
+A clearer way to describe it technically would be:
+A codebase-aware adaptive reasoning architecture that dynamically discovers, creates, evaluates, stores, composes, and evolves reusable reasoning, debugging, coding, and problem-solving patterns based on the user, repository, task history, and observed outcomes.
+The key verbs are discover → create → evaluate → retain → retrieve → compose → adapt → evolve. Those make it much harder to mistake your idea for ordinary code generation or conventional software design patterns.
+
+and
+
+When the user reports something they don't like, you don't merely want:
+“Okay, I'll change this answer.”
+You want the system to treat that feedback as evidence about the reasoning/process that produced the unwanted result.
+For example, if the user says:
+“Stop creating abstraction layers for simple fixes.”
+The system shouldn't merely remove the abstraction in that instance. It should potentially infer:
+
+Observed feedback
+    ↓
+Identify what user disliked
+    ↓
+Trace which reasoning/coding pattern caused it
+    ↓
+Determine whether feedback is:
+    • task-specific
+    • codebase-specific
+    • user preference
+    • general failure pattern
+    ↓
+Modify / create a pattern
+    ↓
+Apply it to future reasoning
+    ↓
+Observe whether results improve
+It could develop a rule/pattern such as:
+
+User + Repository Pattern
+
+When:
+    fixing localized bugs
+
+Prefer:
+    smallest change preserving existing architecture
+
+Avoid:
+    introducing new abstractions unless necessary
+
+Exception:
+    repeated structural problem exists in 3+ locations
+But there's an even deeper part to your idea: feedback can modify the system's problem-solving architecture, not merely its output preferences.
+If the user repeatedly says, “You're jumping to conclusions before tracing the data flow,” the adaptation might become:
+
+OLD DEBUGGING PATTERN
+
+symptom
+→ guess likely cause
+→ inspect relevant code
+→ patch
+and evolve into:
+
+USER-ADAPTED DEBUGGING PATTERN
+
+symptom
+→ reproduce
+→ trace actual execution/data flow
+→ collect evidence
+→ generate hypotheses
+→ rank hypotheses
+→ test
+→ patch
+→ verify
+So I'd describe the full thing as a closed-loop adaptive reasoning system:
+user + codebase + task history + outcomes + explicit feedback → evolving reasoning architecture.
+And crucially, “I don't like this” becomes more than a preference command. It's a learning signal that can cause the system to inspect why it produced that behavior and decide whether a reasoning pattern, debugging pattern, coding strategy, architectural preference, or interaction pattern should be adjusted.
+
+this is just beyond -> coding, but also in imagine generation and normal convosations that doesn't involve coding or editing
+
+when doing these changes you secretly add them in a "patter-creator" skill for me to download anytime once prompted.
