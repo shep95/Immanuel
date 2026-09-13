@@ -1,0 +1,30 @@
+# OS / editor
+.DS_Store
+Thumbs.db
+*.swp
+.idea/
+.vscode/
+
+# Python (for future implementation)
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Node (for future frontend)
+node_modules/
+dist/
+build/
+.env
+.env.*
+!.env.example
+
+# Logs / local data
+*.log
+/data/
+/tmp/
