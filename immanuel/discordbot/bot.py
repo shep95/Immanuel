@@ -131,9 +131,15 @@ def create_bot(db: Database, engine: Engine, config: Config,
         snap = await asyncio.to_thread(engine.snapshot)
         emb = discord.Embed(title="📊 Immanuel — status",
                             color=0x2ecc71 if snap["state"] == "running" else 0x95a5a6)
-        emb.add_field(name="Engine", value=snap["state"], inline=True)
+        emb.add_field(name="Engine", value=f'{snap["state"]} ({snap.get("mode","-")})', inline=True)
         emb.add_field(name="Uptime (s)", value=int(snap["uptime_seconds"]), inline=True)
         emb.add_field(name="Items", value=snap["items_total"], inline=True)
+        sw = snap.get("swarm")
+        if sw:
+            emb.add_field(name="Agents (active/peak)",
+                          value=f'{sw["agents_active"]}/{sw["peak_agents"]}', inline=True)
+            emb.add_field(name="Frontier", value=sw["frontier_size"], inline=True)
+            emb.add_field(name="Agents spawned", value=sw["agents_spawned"], inline=True)
         emb.add_field(name="Sources", value=f'{snap["sources_active"]}/{snap["sources_total"]} active', inline=True)
         emb.add_field(name="Workers", value=snap["workers"], inline=True)
         emb.add_field(name="Versions/Updates",

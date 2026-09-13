@@ -33,6 +33,7 @@ class Engine:
         self._shutdown = asyncio.Event()
         self._wake = asyncio.Event()
         self.started_at: float | None = None
+        self.swarm = None  # set when running in swarm mode
         self.stats = {
             "cycles": 0,
             "processed": 0,
@@ -42,6 +43,7 @@ class Engine:
             "unchanged": 0,
             "errors": 0,
             "discovered": 0,
+            "agents_spawned": 0,
             "last_cycle_at": None,
         }
 
@@ -107,8 +109,9 @@ class Engine:
         return (time.time() - self.started_at) if self.started_at else 0.0
 
     def snapshot(self) -> dict:
-        return {
+        snap = {
             "state": self.state,
+            "mode": self.config.crawler_mode,
             "workers": self.num_workers,
             "uptime_seconds": round(self.uptime_seconds(), 1),
             "items_total": self.db.count_items(),
@@ -119,6 +122,9 @@ class Engine:
             "sources_active": self.db.count_sources("active"),
             "stats": dict(self.stats),
         }
+        if self.swarm is not None:
+            snap["swarm"] = self.swarm.stats()
+        return snap
 
     def _emit(self, event: dict) -> None:
         if self.publish_queue is None:
@@ -134,6 +140,13 @@ class Engine:
         if prior == RUNNING or self.config.autostart_crawler:
             self.start()
 
+        if self.config.crawler_mode == "swarm":
+            from .crawler.swarm import AgentSwarm
+            self.swarm = AgentSwarm(self)
+            await self.swarm.run()
+            return
+
+        # ---- cycle mode: fixed worker pool draining per-cycle batches ----
         while not self._shutdown.is_set():
             if self.state != RUNNING:
                 try:

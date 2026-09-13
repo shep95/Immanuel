@@ -356,6 +356,22 @@ class Database:
                 )
             self._conn.commit()
 
+    def mark_url_crawled(self, url: str, ok: bool = True) -> None:
+        now = time.time()
+        with self._lock:
+            if ok:
+                self._conn.execute(
+                    "UPDATE sources SET last_crawled=?, failure_count=0 WHERE url=?",
+                    (now, url),
+                )
+            else:
+                self._conn.execute(
+                    "UPDATE sources SET last_crawled=?, failure_count=failure_count+1 "
+                    "WHERE url=?",
+                    (now, url),
+                )
+            self._conn.commit()
+
     def count_sources(self, status: str | None = None) -> int:
         with self._lock:
             if status:

@@ -40,6 +40,7 @@ class ProcessResult:
     domain: str = ""
     media: list = field(default_factory=list)
     discovered: int = 0
+    links: list = field(default_factory=list)   # http(s) links found on the page
 
     def event(self) -> dict:
         """A compact record for the Discord publisher / event queue."""
@@ -139,11 +140,13 @@ async def process_url(
 
     # --- discovery (links + subdomains as future sources) -------------------
     discovered = 0
-    if discover and ex.links:
+    found_links: list[str] = []
+    if ex.links:
         for link in ex.links[:max_links]:
             if link.startswith(("http://", "https://")):
-                if db.add_source(link, kind="discovered",
-                                 domain=urlparse(link).netloc):
+                found_links.append(link)
+                if discover and db.add_source(link, kind="discovered",
+                                              domain=urlparse(link).netloc):
                     discovered += 1
 
     return ProcessResult(
@@ -165,4 +168,5 @@ async def process_url(
         domain=domain,
         media=ex.media,
         discovered=discovered,
+        links=found_links,
     )

@@ -39,9 +39,14 @@ It's designed to be hosted on **Railway** as a single service.
 ## What it does
 
 - **The algorithm** crawls public web sources 24/7 (politely, respecting `robots.txt`),
-  with **multiple parallel crawler workers** (`NUM_CRAWLERS`), extracts content from
-  **any media type** (HTML, feeds, JSON, text, images/audio/video metadata), deduplicates
-  it, and stores it with provenance.
+  extracts content from **any media type** (HTML, feeds, JSON, text, images/audio/video
+  metadata), deduplicates it, and stores it with provenance.
+- **Crawler-agent swarm (default):** in `swarm` mode Immanuel spawns a **brand-new,
+  non-AI crawler-agent for every page/link it discovers** — each agent fetches its page,
+  then its discovered links spawn more agents, fanning out massively. It's bounded by
+  `MAX_AGENTS` (concurrent), a bounded frontier, and per-domain politeness so it goes fast
+  without exhausting the machine or hammering any host. (`CRAWLER_MODE=cycle` switches to a
+  fixed worker pool if you prefer steadier behavior.)
 - **Timestamps + versioning:** every capture is timestamped. When a page changes between
   crawls, Immanuel records a **new version** and shows **what was added/removed and when**
   (see `/recent_updates`, the `immanuel-updates` channel, and `GET /v1/versions`).
@@ -106,24 +111,27 @@ Endpoints: `GET /health` (public) · `GET /v1/status` · `GET /v1/categories` ·
 `GET /v1/search` · `GET /v1/items/{id}` · `GET /v1/versions?url=…` (page history +
 timestamps) · `GET /v1/updates` (recent changes) · `GET /v1/export`.
 
-## How many crawlers do I need?
+## How many crawler-agents do I need?
 
-Crawler workers are **async I/O tasks**, so one Railway container runs many cheaply.
+Agents/workers are **async I/O tasks**, so one Railway container runs many cheaply.
 Throughput is bounded by **per-domain politeness** (`CRAWL_DELAY_SECONDS`), not by CPU —
-so the way to go faster is more *distinct domains*, not more workers per domain.
+so the way to go faster is more *distinct domains*, not more agents hitting one host.
+(One agent per page still means same-domain agents queue politely behind the per-host
+delay; different domains run fully in parallel.)
 
 Rough sizing (with `CRAWL_DELAY_SECONDS=2`, i.e. ≤0.5 req/s per host):
 
-| Goal | `NUM_CRAWLERS` | Notes |
-|------|----------------|-------|
-| Light / a few dozen sites | 8 | default; comfortable on 1 small container |
-| Busy / hundreds of domains | 16 | good balance |
-| Heavy / thousands of domains | 32 | 1 larger container, or scale out |
-| Very large | 32 per container × N containers | run multiple Railway replicas sharing the DB (Postgres — a roadmap item), one politeness budget per host |
+| Goal | `MAX_AGENTS` (swarm) / `NUM_CRAWLERS` (cycle) | Notes |
+|------|-----------------------------------------------|-------|
+| Light / a few dozen sites | 50 / 8 | comfortable on 1 small container |
+| Busy / hundreds of domains | 200 / 16 | good balance |
+| Heavy / thousands of domains | 500 / 32 | 1 larger container, or scale out |
+| Very large | above × N containers | run multiple Railway replicas sharing the DB (Postgres — a roadmap item); one politeness budget per host |
 
-Formula: sustainable pages/sec ≈ `min(NUM_CRAWLERS, distinct_domains) / CRAWL_DELAY_SECONDS`.
-With 16 workers across ≥16 domains at 2s delay ≈ **8 pages/sec ≈ 690k pages/day**.
-Increase `MAX_PAGES_PER_CYCLE` and lower `CYCLE_INTERVAL_SECONDS` to raise per-cycle volume.
+Formula: sustainable pages/sec ≈ `min(concurrent_agents, distinct_domains) / CRAWL_DELAY_SECONDS`.
+With 200 agents across ≥200 domains at 2s delay ≈ **100 pages/sec ≈ 8.6M pages/day**.
+The swarm auto-scales agents up to `MAX_AGENTS` as it discovers pages; you don't tune
+per-cycle batch sizes in swarm mode.
 
 ## Setup — Step by step
 

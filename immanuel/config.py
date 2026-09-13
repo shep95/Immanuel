@@ -48,7 +48,13 @@ class Config:
 
     # Crawler
     user_agent: str = "ImmanuelBot/1.0 (+https://github.com/shep95/Immanuel)"
-    num_crawlers: int = 8               # parallel crawler workers
+    # "swarm" = spawn a new crawler-agent per discovered page (dynamic, fastest);
+    # "cycle" = fixed worker pool draining per-cycle batches (steadier).
+    crawler_mode: str = "swarm"
+    max_agents: int = 50                # max concurrent crawler-agents (swarm cap)
+    frontier_max: int = 20000           # max URLs waiting to be picked up
+    visited_max: int = 200000           # in-memory recently-seen URL cap
+    num_crawlers: int = 8               # parallel workers (cycle mode)
     crawl_concurrency: int = 4          # legacy alias; num_crawlers wins if larger
     crawl_delay_seconds: float = 2.0
     max_pages_per_cycle: int = 25
@@ -87,6 +93,10 @@ class Config:
                 "IMMANUEL_USER_AGENT",
                 "ImmanuelBot/1.0 (+https://github.com/shep95/Immanuel)",
             ).strip(),
+            crawler_mode=os.getenv("CRAWLER_MODE", "swarm").strip().lower() or "swarm",
+            max_agents=_int("MAX_AGENTS", 50),
+            frontier_max=_int("FRONTIER_MAX", 20000),
+            visited_max=_int("VISITED_MAX", 200000),
             num_crawlers=_int("NUM_CRAWLERS", 8),
             crawl_concurrency=_int("CRAWL_CONCURRENCY", 4),
             crawl_delay_seconds=float(_int("CRAWL_DELAY_SECONDS", 2)),
