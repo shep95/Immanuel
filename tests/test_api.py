@@ -95,10 +95,12 @@ def test_companies_and_topics(client):
     assert rt.json()["topics"][0]["topic"] == "technology"
 
 
-def test_patterns_endpoint(client):
+def test_patterns_endpoint_requires_admin(client):
     c, db = client
-    key = generate_api_key(db, owner="tester")
-    r = c.get("/v1/patterns", headers={"X-API-Key": key})
+    read_key = generate_api_key(db, owner="tester", scopes="read")
+    assert c.get("/v1/patterns", headers={"X-API-Key": read_key}).status_code == 403
+    admin_key = generate_api_key(db, owner="admin", scopes="read admin")
+    r = c.get("/v1/patterns", headers={"X-API-Key": admin_key})
     assert r.status_code == 200 and "patterns" in r.json()
 
 

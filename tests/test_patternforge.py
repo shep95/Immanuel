@@ -47,6 +47,43 @@ def test_secret_exposure_pattern(db):
     assert se and se[0]["domain"] == "security"
 
 
+def _seed_gh(db, n, category, language, start=0):
+    for i in range(start, start + n):
+        db.add_github_repo({
+            "full_name": f"u/{category}-{language}-{i}",
+            "html_url": f"https://github.com/u/{category}-{language}-{i}",
+            "name": f"repo{i}", "description": "d", "category": category,
+            "how_useful": "u", "language": language, "stars": 10,
+            "topics": [category], "matched": [category], "score": 4,
+        })
+
+
+def test_github_family_language_pattern(db):
+    _seed_gh(db, 7, "osint", "Python")
+    _seed_gh(db, 2, "osint", "Go", start=100)
+    forge.run_pass(db, min_evidence=3, min_confidence=0.5)
+    gp = [p for p in db.list_patterns() if p["family"] == "github_tool_language"]
+    assert gp and "Python" in gp[0]["name"] and "osint" in gp[0]["name"]
+    assert gp[0]["domain"] == "tooling"
+
+
+def test_github_family_breadth_pattern(db):
+    _seed_gh(db, 6, "hacking", "C")
+    _seed_gh(db, 2, "osint", "Python", start=200)
+    forge.run_pass(db, min_evidence=3, min_confidence=0.5)
+    gb = [p for p in db.list_patterns() if p["family"] == "github_tool_breadth"]
+    assert gb and "hacking" in gb[0]["name"]
+
+
+def test_secret_carries_company(db):
+    db.add_secret("https://acme.com/x", "acme.com", "stripe_secret_key",
+                  "sk_…abcd", "sha256:z", "in config.js", "high", company="Acme")
+    rows = db.recent_secrets()
+    assert rows and rows[0]["company"] == "Acme"
+    grouped = db.secrets_by_company()
+    assert grouped and grouped[0]["company"] == "Acme"
+
+
 def test_skills_export_renders(db):
     _seed(db, 5, "ai-ml", "public_fact")
     forge.run_pass(db)

@@ -215,18 +215,28 @@ class Publisher:
         if channel is None:
             return
         findings = event.get("secrets") or []
+        # company is tagged onto each finding; fall back to a page-level value
+        company = event.get("company")
+        for s in findings:
+            if s.get("company"):
+                company = s["company"]
+                break
         emb = discord.Embed(
-            title=f"🔐 Exposed credentials on {event.get('domain') or 'a page'}",
+            title=f"🔐 Exposed credentials — {company or event.get('domain') or 'a page'}",
             url=event.get("url"), color=0xc0392b,
         )
-        emb.description = (event.get("url") or "")[:400]
+        emb.add_field(name="Company", value=str(company or "unknown")[:100], inline=True)
+        emb.add_field(name="Host", value=str(event.get("domain") or "-")[:100], inline=True)
+        emb.add_field(name="Page", value=(event.get("url") or "-")[:200], inline=False)
         for s in findings[:15]:
+            # secret -> what kind -> what data it was sitting in
             emb.add_field(
                 name=f"{s.get('severity','?')} · {s.get('type')}",
-                value=f"`{s.get('masked')}`\n{(s.get('context') or '')[:120]}",
+                value=f"secret: `{s.get('masked')}`\n"
+                      f"data: {(s.get('context') or 'n/a')[:180]}",
                 inline=False,
             )
-        emb.set_footer(text="asherin • values masked; raw secret never stored")
+        emb.set_footer(text="asherin • admin only • values masked; raw secret never stored")
         try:
             await channel.send(embed=emb)
         except discord.HTTPException:

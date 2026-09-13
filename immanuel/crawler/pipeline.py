@@ -158,7 +158,12 @@ async def process_url(
             blob = ex.text + "\n" + "\n".join(
                 c.get("snippet", "") for c in ex.code if c.get("snippet"))
             for s in scan_secrets(blob):
-                secrets_found.append(s.as_dict())
+                d = s.as_dict()
+                # tag each finding with the company + host it leaked from, so the
+                # admin surface can show: secret -> company -> what data
+                d["company"] = company
+                d["domain"] = domain
+                secrets_found.append(d)
 
     # --- versioning / timestamps --------------------------------------------
     latest = db.get_latest_version(final_url)
@@ -220,7 +225,8 @@ async def process_url(
     if config is not None and secrets_found:
         for s in secrets_found:
             db.add_secret(final_url, domain, s["type"], s["masked"],
-                          s["fingerprint"], s["context"], s["severity"])
+                          s["fingerprint"], s["context"], s["severity"],
+                          company=company)
 
     # --- discovery (links + subdomains as future sources) -------------------
     discovered = 0

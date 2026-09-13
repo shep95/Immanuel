@@ -176,12 +176,74 @@ def mine_volatility(db) -> list[PatternObject]:
     return out
 
 
+def mine_github_family_language(db) -> list[PatternObject]:
+    """Within a tool family, which language dominates? (tooling-language bias)."""
+    by_cat: dict[str, dict[str, int]] = defaultdict(lambda: defaultdict(int))
+    for r in db.agg_github_category_language():
+        by_cat[r["category"]][r["language"] or "unknown"] += r["c"]
+    out = []
+    for category, langs in by_cat.items():
+        total = sum(langs.values())
+        if total < 3:
+            continue
+        dom_lang, dom_n = max(langs.items(), key=lambda kv: kv[1])
+        conf = _confidence(dom_n, total)
+        out.append(PatternObject(
+            pattern_id=stable_id("github_tool_language", category),
+            name=f"{category} tools are mostly {dom_lang}",
+            family="github_tool_language", domain="tooling", scope="domain",
+            trigger=f"evaluating/looking for a {category} tool on GitHub",
+            mechanism=f"public {category} tooling concentrates in {dom_lang} "
+                      f"({dom_n}/{total} = {dom_n/total:.0%})",
+            function=f"expect a new {category} tool to be written in {dom_lang}; "
+                     f"prioritize {dom_lang} tooling when building/porting",
+            invariant=f"{category} -> {dom_lang} plurality",
+            evidence=[f"{lng}: {n}" for lng, n in
+                      sorted(langs.items(), key=lambda x: -x[1])[:8]],
+            evidence_count=total, confidence=conf,
+            epistemic_status="observation",
+            tests=[f"sample new {category} repos; check {dom_lang} stays the plurality"],
+            falsifiers=[f"another language overtakes {dom_lang} for {category}"],
+            success_conditions=[f"{dom_lang} share stays the plurality"],
+            transfer_constraints=["reflects what is published publicly, not what is best"],
+        ))
+    return out
+
+
+def mine_github_family_breadth(db) -> list[PatternObject]:
+    """Which tool family dominates what we've discovered? (attention mechanism)."""
+    counts = db.github_category_counts()
+    total = sum(counts.values())
+    if total < 5:
+        return []
+    dom_cat, dom_n = max(counts.items(), key=lambda kv: kv[1])
+    conf = _confidence(dom_n, total)
+    return [PatternObject(
+        pattern_id=stable_id("github_tool_breadth", "corpus"),
+        name=f"discovered tooling skews {dom_cat}",
+        family="github_tool_breadth", domain="tooling", scope="domain",
+        trigger="allocating tool-scouting attention across families",
+        mechanism=f"of {total} useful repos found, {dom_cat} is the largest share "
+                  f"({dom_n}/{total} = {dom_n/total:.0%})",
+        function=f"expect {dom_cat} to keep yielding the most tools; "
+                 "rebalance queries if another family is under-covered",
+        invariant="one tool family contributes an outsized share",
+        evidence=[f"{c}: {n}" for c, n in sorted(counts.items(), key=lambda x: -x[1])],
+        evidence_count=total, confidence=conf,
+        epistemic_status="observation",
+        tests=[f"keep scouting; confirm {dom_cat} stays the largest family"],
+        falsifiers=[f"another family overtakes {dom_cat}"],
+    )]
+
+
 MINERS = (
     mine_topic_category,
     mine_company_topic,
     mine_secret_exposure,
     mine_domain_breadth,
     mine_volatility,
+    mine_github_family_language,
+    mine_github_family_breadth,
 )
 
 

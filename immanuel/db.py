@@ -113,10 +113,11 @@ CREATE TABLE IF NOT EXISTS secrets_found (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
     url           TEXT NOT NULL,
     domain        TEXT,
-    secret_type   TEXT NOT NULL,
+    company       TEXT,                   -- which company/brand the leaking page belongs to
+    secret_type   TEXT NOT NULL,          -- what kind of secret (aws/stripe/github/...)
     masked        TEXT NOT NULL,
     fingerprint   TEXT NOT NULL,          -- sha256 of the raw match (dedup, never the secret)
-    context       TEXT,
+    context       TEXT,                   -- the surrounding data it was found in
     severity      TEXT,
     found_at      REAL NOT NULL,
     UNIQUE(fingerprint, url)
@@ -217,6 +218,13 @@ _ITEM_MIGRATIONS = {
     "lang": "ALTER TABLE items ADD COLUMN lang TEXT",
 }
 
+# Columns added to other tables after their first release (idempotent).
+_TABLE_MIGRATIONS = {
+    "secrets_found": {
+        "company": "ALTER TABLE secrets_found ADD COLUMN company TEXT",
+    },
+}
+
 
 class Database:
     def __init__(self, path: str):
@@ -244,6 +252,15 @@ class Database:
                     self._conn.execute(ddl)
                 except sqlite3.OperationalError:
                     pass
+        for table, migrations in _TABLE_MIGRATIONS.items():
+            have = {r["name"] for r in self._conn.execute(
+                f"PRAGMA table_info({table})").fetchall()}
+            for col, ddl in migrations.items():
+                if col not in have:
+                    try:
+                        self._conn.execute(ddl)
+                    except sqlite3.OperationalError:
+                        pass
 
     def close(self) -> None:
         with self._lock:
@@ -640,21 +657,32 @@ class Database:
     # --------------------------------------------------------- secrets_found
     def add_secret(self, url: str, domain: str | None, secret_type: str,
                    masked: str, fingerprint: str, context: str | None,
-                   severity: str = "medium") -> bool:
+                   severity: str = "medium", company: str | None = None) -> bool:
         with self._lock:
             try:
                 self._conn.execute(
                     """INSERT INTO secrets_found
-                       (url, domain, secret_type, masked, fingerprint, context,
-                        severity, found_at)
-                       VALUES (?,?,?,?,?,?,?,?)""",
-                    (url, domain, secret_type, masked, fingerprint,
+                       (url, domain, company, secret_type, masked, fingerprint,
+                        context, severity, found_at)
+                       VALUES (?,?,?,?,?,?,?,?,?)""",
+                    (url, domain, company, secret_type, masked, fingerprint,
                      (context or "")[:400], severity, time.time()),
                 )
                 self._conn.commit()
                 return True
             except sqlite3.IntegrityError:
                 return False
+
+    def secrets_by_company(self, limit: int = 200) -> list[dict[str, Any]]:
+        """Grouped view: company -> how many secrets, of which types."""
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT COALESCE(company, domain, '?') company, "
+                "COUNT(*) c, COUNT(DISTINCT secret_type) types "
+                "FROM secrets_found GROUP BY COALESCE(company, domain, '?') "
+                "ORDER BY c DESC LIMIT ?", (limit,)
+            ).fetchall()
+        return [dict(r) for r in rows]
 
     def recent_secrets(self, limit: int = 50) -> list[dict[str, Any]]:
         with self._lock:
@@ -847,6 +875,24 @@ class Database:
             rows = self._conn.execute(
                 "SELECT domain, COUNT(*) c, COUNT(DISTINCT secret_type) types "
                 "FROM secrets_found WHERE domain IS NOT NULL GROUP BY domain"
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def agg_github_category_language(self) -> list[dict[str, Any]]:
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT category, COALESCE(language,'unknown') language, "
+                "COUNT(*) c FROM github_repos "
+                "WHERE category IS NOT NULL GROUP BY category, language"
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def agg_github_topic_category(self) -> list[dict[str, Any]]:
+        """topic (from a repo's declared topics) -> tool family, via topics_json."""
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT category, topics_json FROM github_repos "
+                "WHERE category IS NOT NULL"
             ).fetchall()
         return [dict(r) for r in rows]
 

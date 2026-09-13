@@ -115,8 +115,12 @@ engine over your own corpus. Same data is available at `GET /v1/search`.
 ### Pattern Forge — the second, non-AI algorithm (24/7)
 
 A separate **deterministic** engine runs alongside the crawler. It does **not** pile up facts;
-it learns **patterns**: `experience → outcome → cause → abstract mechanism → formalize →
-test → scope → store → retrieve → adapt`. Each pattern is a Universal Pattern Object
+it learns **patterns** from the data it has already collected and keeps collecting:
+`experience → outcome → cause → abstract mechanism → formalize → test → scope → store →
+retrieve → adapt`. Miners currently cover topic↔category bias, company focus, secret
+exposure, domain breadth, page volatility, and the **GitHub tool scout** (which language a
+tool family skews to, and which family dominates the discovered tooling). The pattern
+library and `/skills-download` export are **admin-only**. Each pattern is a Universal Pattern Object
 (identity, domain, trigger, mechanism, invariants, evidence, confidence, failure modes,
 tests, scope, lifecycle…) and moves through a lifecycle
 (`candidate → testing → validated → active → deprecated → retired`) so untested strategies
@@ -164,11 +168,12 @@ raw code is never downloaded — only public repo metadata.
 | `/set_channel_perms <channel> <role> <can_view>` | admin | Allow/deny a role from viewing a channel |
 | `/search <query> [category] [company] [topic]` | anyone | **asherin.eng** — query everything collected, like a working search engine |
 | `/setup_asherin_eng` | admin | Create the `#asherin-eng` search channel |
-| `/patterns` | anyone | Show the Pattern Forge library (learned patterns + lifecycle) |
-| `/skills-download [only_validated]` | anyone | Download all learned pattern skills as a `.txt` file |
+| `/patterns` | **admin** | Show the Pattern Forge library (learned patterns + lifecycle), ephemeral |
+| `/skills-download [only_validated]` | **admin** | Download all learned pattern skills as a `.txt` file (ephemeral, admin only) |
 | `/intel` | anyone | Show the most recent intel data-reports |
 | `/setup_secrets_channel` | admin | Create the **private** `#asherin-api-keys` channel for exposed-secret alerts |
-| `/adminkey` | admin | Generate an **admin** API key (unlocks the exposed-secrets endpoint) |
+| `/secrets [by_company]` | **admin** | List exposed secrets → company → data (ephemeral, admin only) |
+| `/adminkey` | admin | Generate an **admin** API key (unlocks patterns + exposed-secrets endpoints) |
 | `/setup_github_channel` | admin | Create the **private owner-only** `#asherin-github-tools` channel |
 | `/github_tools [category]` | anyone | Show recently discovered useful GitHub tools |
 
@@ -194,10 +199,12 @@ Endpoints: `GET /health` (public) · `GET /v1/status` · `GET /v1/categories` ·
 changes) · `GET /v1/export`.
 
 Deep-acquisition + Pattern Forge endpoints: `GET /v1/companies` · `GET /v1/topics` ·
-`GET /v1/intel` (recent reports) · `GET /v1/intel/report?url=…` · `GET /v1/patterns`
-(learned patterns) · `GET /v1/patterns/export` (skills as text) ·
-`GET /v1/secrets` (**admin key required** — masked exposed-secret findings) ·
+`GET /v1/intel` (recent reports) · `GET /v1/intel/report?url=…` ·
 `GET /v1/github/tools?category=…` (discovered osint/cyber/hacking/surveillance/red-team tools).
+
+**Admin-key-only** (generate with `/adminkey`): `GET /v1/patterns` (learned patterns) ·
+`GET /v1/patterns/export` (skills as text) · `GET /v1/secrets` (masked exposed-secret
+findings — secret → company → data).
 
 ## How many crawler-agents do I need?
 

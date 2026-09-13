@@ -109,9 +109,9 @@ def create_app(db: Database, engine: Any = None, forge: Any = None,
             raise HTTPException(status_code=404, detail="no intel report for that url")
         return rep
 
-    # ---- Pattern Forge library -------------------------------------------
+    # ---- Pattern Forge library (ADMIN ONLY) ------------------------------
     @app.get("/v1/patterns")
-    def patterns(_: dict = Depends(require_key),
+    def patterns(_: dict = Depends(require_admin),
                  status: str | None = Query(default=None),
                  limit: int = Query(default=200, ge=1, le=1000)) -> dict:
         rows = db.list_patterns(status=status, limit=limit)
@@ -119,7 +119,7 @@ def create_app(db: Database, engine: Any = None, forge: Any = None,
         return {"count": len(rows), "forge": forge_snap, "patterns": rows}
 
     @app.get("/v1/patterns/export")
-    def patterns_export(_: dict = Depends(require_key),
+    def patterns_export(_: dict = Depends(require_admin),
                         only_validated: bool = Query(default=False)) -> JSONResponse:
         from ..patternforge.skills import render_skills
         text = render_skills(db, only_validated=only_validated)

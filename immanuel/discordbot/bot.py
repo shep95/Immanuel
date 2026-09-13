@@ -230,8 +230,10 @@ def create_bot(db: Database, engine: Engine, config: Config,
 
     # ---------------------------------------------------- pattern forge
     @tree.command(name="patterns",
-                  description="Show the Pattern Forge library (learned patterns).")
+                  description="[admin] Show the Pattern Forge library (learned patterns).")
     async def patterns_cmd(interaction: discord.Interaction) -> None:
+        if not await admin_only(interaction):
+            return
         rows = await asyncio.to_thread(db.list_patterns, None, 10)
         fs = forge.snapshot() if forge is not None else {
             "patterns_total": len(rows), "validated": 0, "active": 0, "passes": 0}
@@ -252,14 +254,16 @@ def create_bot(db: Database, engine: Engine, config: Config,
             emb.add_field(name="—",
                           value="no patterns yet; the forge learns as data arrives.",
                           inline=False)
-        await interaction.response.send_message(embed=emb)
+        await interaction.response.send_message(embed=emb, ephemeral=True)
 
     @tree.command(name="skills-download",
-                  description="Download all learned pattern skills as a .txt file.")
+                  description="[admin] Download all learned pattern skills as a .txt file.")
     @app_commands.describe(only_validated="only export validated/active patterns")
     async def skills_download(interaction: discord.Interaction,
                               only_validated: bool = False) -> None:
-        await interaction.response.defer(thinking=True)
+        if not await admin_only(interaction):
+            return
+        await interaction.response.defer(thinking=True, ephemeral=True)
         from ..patternforge.skills import render_skills
         text = await asyncio.to_thread(render_skills, db, only_validated=only_validated)
         data = text.encode("utf-8")
@@ -267,13 +271,14 @@ def create_bot(db: Database, engine: Engine, config: Config,
             file = discord.File(io.BytesIO(data), filename="asherin_skills.txt")
             await interaction.followup.send(
                 f"🧠 Exported the Pattern Forge skill library "
-                f"({db.count_patterns()} patterns).", file=file)
+                f"({db.count_patterns()} patterns).", file=file, ephemeral=True)
         else:
             file = discord.File(io.BytesIO(data[:DISCORD_FILE_LIMIT]),
                                 filename="asherin_skills_partial.txt")
             await interaction.followup.send(
                 "🧠 Skill library is large — sending a partial file. "
-                "Full export: `GET /v1/patterns/export` with your API key.", file=file)
+                "Full export: `GET /v1/patterns/export` with your ADMIN API key.",
+                file=file, ephemeral=True)
 
     # ---------------------------------------------------- intel reports
     @tree.command(name="intel",
@@ -310,6 +315,44 @@ def create_bot(db: Database, engine: Engine, config: Config,
             f"✅ Private api-key channel ready: {chan.mention}. "
             "Exposed API keys / secrets found on public pages are reported here "
             "(admins only; values masked).")
+
+    @tree.command(name="secrets",
+                  description="[admin] List exposed secrets: secret -> company -> data.")
+    @app_commands.describe(by_company="group by company instead of listing findings")
+    async def secrets_cmd(interaction: discord.Interaction,
+                          by_company: bool = False) -> None:
+        if not await admin_only(interaction):
+            return
+        await interaction.response.defer(thinking=True, ephemeral=True)
+        if by_company:
+            rows = await asyncio.to_thread(db.secrets_by_company, 25)
+            if not rows:
+                await interaction.followup.send("No exposed secrets found yet.",
+                                                ephemeral=True)
+                return
+            lines = [f'• **{r["company"]}** — {r["c"]} secret(s), '
+                     f'{r["types"]} type(s)' for r in rows]
+            await interaction.followup.send(
+                "**Exposed secrets by company:**\n" + "\n".join(lines)[:1900],
+                ephemeral=True)
+            return
+        rows = await asyncio.to_thread(db.recent_secrets, 15)
+        if not rows:
+            await interaction.followup.send("No exposed secrets found yet.",
+                                            ephemeral=True)
+            return
+        emb = discord.Embed(
+            title="🔐 Exposed secrets (admin only)",
+            description=f"{db.count_secrets()} total • values masked",
+            color=0xc0392b)
+        for r in rows[:15]:
+            emb.add_field(
+                name=f'{r["secret_type"]} — {r.get("company") or r.get("domain") or "?"}',
+                value=f'secret: `{r["masked"]}`\n'
+                      f'data: {(r.get("context") or "n/a")[:150]}\n'
+                      f'{r["url"][:120]}',
+                inline=False)
+        await interaction.followup.send(embed=emb, ephemeral=True)
 
     @tree.command(name="adminkey",
                   description="Generate an ADMIN API key (access exposed-secret endpoints).")
