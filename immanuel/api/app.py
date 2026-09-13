@@ -15,7 +15,8 @@ from ..db import Database
 from ..keys import verify_api_key
 
 
-def create_app(db: Database, engine: Any = None, forge: Any = None) -> FastAPI:
+def create_app(db: Database, engine: Any = None, forge: Any = None,
+               scout: Any = None) -> FastAPI:
     app = FastAPI(
         title="Immanuel API",
         version="0.2.0",
@@ -123,6 +124,17 @@ def create_app(db: Database, engine: Any = None, forge: Any = None) -> FastAPI:
         from ..patternforge.skills import render_skills
         text = render_skills(db, only_validated=only_validated)
         return JSONResponse({"format": "text", "skills": text})
+
+    # ---- GitHub tool scout ------------------------------------------------
+    @app.get("/v1/github/tools")
+    def github_tools(_: dict = Depends(require_key),
+                     category: str | None = Query(default=None),
+                     limit: int = Query(default=50, ge=1, le=200)) -> dict:
+        rows = db.list_github_repos(category=category, limit=limit)
+        snap = scout.snapshot() if scout else {
+            "repos_total": db.count_github_repos(),
+            "by_category": db.github_category_counts()}
+        return {"count": len(rows), "scout": snap, "tools": rows}
 
     # ---- exposed secrets (ADMIN ONLY; values are masked) -----------------
     @app.get("/v1/secrets")

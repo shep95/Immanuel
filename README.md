@@ -124,6 +124,25 @@ stay hypotheses. See `/patterns`, `GET /v1/patterns`, and **`/skills-download`**
 all learned pattern skills as a `.txt` file. The framework "brains" this implements live in
 [`docs/patternforge/`](docs/patternforge/).
 
+### GitHub tool scout — the third, non-AI algorithm (24/7)
+
+A deterministic scout (`ENABLE_GITHUB_SCOUT=true`) continuously scans **public GitHub**
+for real **software / algorithms** in five families — **osint · cyber-security · hacking ·
+surveillance · red-team**. It searches the public GitHub API, classifies each repo purely by
+keyword/topic signals + the repo's own metadata (no AI), keeps only actual tools (not
+docs/awesome-lists), and walks pages across passes so it reaches deep/forgotten repos over
+time. Each new find is dropped into a **private channel only the server owner and the bot can
+see** (`#asherin-github-tools`, created by `/setup_github_channel`) with:
+
+- **link to GitHub**
+- **software name**
+- **software description**
+- **how it's useful** (why it matched + language/stars)
+
+Keyless by default; a `GITHUB_TOKEN` (if present in the environment) is used only to raise
+the rate limit. Browse finds via `/github_tools [category]` or `GET /v1/github/tools`. The
+raw code is never downloaded — only public repo metadata.
+
 ## Discord commands
 
 | Command | Who | What it does |
@@ -150,6 +169,8 @@ all learned pattern skills as a `.txt` file. The framework "brains" this impleme
 | `/intel` | anyone | Show the most recent intel data-reports |
 | `/setup_secrets_channel` | admin | Create the **private** `#asherin-api-keys` channel for exposed-secret alerts |
 | `/adminkey` | admin | Generate an **admin** API key (unlocks the exposed-secrets endpoint) |
+| `/setup_github_channel` | admin | Create the **private owner-only** `#asherin-github-tools` channel |
+| `/github_tools [category]` | anyone | Show recently discovered useful GitHub tools |
 
 "admin" = a Discord user with the **Administrator** permission, or a user ID listed in
 `MASTER_ADMIN_IDS`.
@@ -175,7 +196,8 @@ changes) · `GET /v1/export`.
 Deep-acquisition + Pattern Forge endpoints: `GET /v1/companies` · `GET /v1/topics` ·
 `GET /v1/intel` (recent reports) · `GET /v1/intel/report?url=…` · `GET /v1/patterns`
 (learned patterns) · `GET /v1/patterns/export` (skills as text) ·
-`GET /v1/secrets` (**admin key required** — masked exposed-secret findings).
+`GET /v1/secrets` (**admin key required** — masked exposed-secret findings) ·
+`GET /v1/github/tools?category=…` (discovered osint/cyber/hacking/surveillance/red-team tools).
 
 ## How many crawler-agents do I need?
 
@@ -381,6 +403,7 @@ immanuel/
 │   ├── crawler/           # fetcher, extract (deep), secrets scanner, pipeline, swarm
 │   ├── media/             # media downloader + YouTube transcript/thumbnail import
 │   ├── patternforge/      # non-AI Pattern Forge: ontology, forge (miners), skills, runner
+│   ├── githubscout/       # non-AI GitHub tool scout: classify (families) + scout (24/7)
 │   ├── discordbot/        # bot commands + publisher (dynamic channels, secrets channel)
 │   ├── api/               # FastAPI app (search, intel, patterns, companies, secrets)
 │   ├── intel.py           # intel data-report builder

@@ -112,6 +112,17 @@ class Config:
     pattern_min_confidence: float = 0.6  # promote CANDIDATE -> VALIDATED at/above this
     skills_export_path: str = "./data/skills"
 
+    # --- GitHub tool scout (find useful osint/cyber/hacking/surveillance/red-team repos) ---
+    enable_github_scout: bool = True
+    github_token: str = ""               # optional; higher rate limits (zero-touch if present)
+    github_scout_interval_seconds: float = 900.0     # how often it runs a search pass
+    # which tool families to hunt for (each becomes its own search + label)
+    github_categories: list[str] = field(default_factory=lambda: [
+        "osint", "cyber-security", "hacking", "surveillance", "red-team"])
+    github_min_stars: int = 5            # ignore near-empty repos
+    github_per_category: int = 30        # results pulled per category per pass
+    github_max_per_pass: int = 60        # hard cap on repos classified per pass
+
     @classmethod
     def from_env(cls) -> "Config":
         guild = os.getenv("DISCORD_GUILD_ID", "").strip()
@@ -172,4 +183,16 @@ class Config:
             pattern_min_evidence=_int("PATTERN_MIN_EVIDENCE", 3),
             pattern_min_confidence=float(_int("PATTERN_MIN_CONFIDENCE_PCT", 60)) / 100.0,
             skills_export_path=os.getenv("SKILLS_EXPORT_PATH", "./data/skills").strip(),
+            enable_github_scout=_bool("ENABLE_GITHUB_SCOUT", True),
+            # zero-touch: use a token if the environment already provides one
+            github_token=(os.getenv("GITHUB_TOKEN", "")
+                          or os.getenv("GH_TOKEN", "")).strip(),
+            github_scout_interval_seconds=float(
+                _int("GITHUB_SCOUT_INTERVAL_SECONDS", 900)),
+            github_categories=(_csv("GITHUB_CATEGORIES") or
+                               ["osint", "cyber-security", "hacking",
+                                "surveillance", "red-team"]),
+            github_min_stars=_int("GITHUB_MIN_STARS", 5),
+            github_per_category=_int("GITHUB_PER_CATEGORY", 30),
+            github_max_per_pass=_int("GITHUB_MAX_PER_PASS", 60),
         )

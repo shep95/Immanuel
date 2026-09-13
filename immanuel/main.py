@@ -20,6 +20,7 @@ from .api.app import create_app
 from .config import Config
 from .db import Database
 from .engine import Engine
+from .githubscout import GitHubScout
 from .patternforge.runner import PatternForge
 
 
@@ -40,8 +41,11 @@ async def _run() -> None:
 
     # Pattern Forge: the second, non-AI algorithm — learns patterns 24/7.
     forge = PatternForge(db, config)
+    # GitHub tool scout: finds useful osint/cyber/hacking/surveillance/red-team
+    # repos across public GitHub 24/7 and drops them into the owner-only channel.
+    scout = GitHubScout(db, config, emit=engine._emit)
 
-    app = create_app(db, engine, forge)
+    app = create_app(db, engine, forge, scout)
     uv_config = uvicorn.Config(app, host=config.api_host, port=config.api_port,
                                log_level="info", loop="asyncio")
     server = uvicorn.Server(uv_config)
@@ -50,6 +54,7 @@ async def _run() -> None:
         asyncio.create_task(server.serve(), name="api"),
         asyncio.create_task(engine.run_forever(), name="engine"),
         asyncio.create_task(forge.run_forever(), name="patternforge"),
+        asyncio.create_task(scout.run_forever(), name="githubscout"),
     ]
 
     bot = None
@@ -57,7 +62,7 @@ async def _run() -> None:
         from .discordbot.bot import create_bot
 
         bot = create_bot(db, engine, config, publish_queue=publish_queue,
-                         forge=forge)
+                         forge=forge, scout=scout)
         tasks.append(asyncio.create_task(bot.start(config.discord_token), name="discord"))
     else:
         print("[immanuel] DISCORD_TOKEN not set — running API + engine only.")
@@ -81,6 +86,7 @@ async def _run() -> None:
     print("[immanuel] shutting down…")
     engine.request_shutdown()
     forge.request_shutdown()
+    scout.request_shutdown()
     server.should_exit = True
     if bot is not None:
         with contextlib.suppress(Exception):

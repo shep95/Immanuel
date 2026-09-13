@@ -26,8 +26,19 @@ DATA_CHANNELS = [
 UPDATES_CHANNEL = "immanuel-updates"
 # Private admin channel where exposed API keys / secrets are reported.
 SECRETS_CHANNEL = "asherin-api-keys"
+# Private OWNER-ONLY channel where useful GitHub tools are dropped.
+GITHUB_CHANNEL = "asherin-github-tools"
 # Category that holds the dynamic per-topic / per-company channels.
 ORGANIZED_CATEGORY = "🗂️ asherin channels"
+
+# Colors per GitHub tool family.
+GITHUB_COLORS = {
+    "osint": 0x1abc9c,
+    "cyber-security": 0x3498db,
+    "hacking": 0xe74c3c,
+    "surveillance": 0x9b59b6,
+    "red-team": 0xe67e22,
+}
 
 CATEGORY_COLORS = {
     "public_fact": 0x2ecc71,
@@ -131,6 +142,8 @@ class Publisher:
             await self._publish_update(event)
         elif kind == "secrets":
             await self._publish_secrets(event)
+        elif kind == "github":
+            await self._publish_github(event)
         else:
             await self._publish_new(event)
 
@@ -238,6 +251,69 @@ class Publisher:
                 return None
         self._chan_cache[SECRETS_CHANNEL] = chan.id
         self.db.set_state(f"chan_{SECRETS_CHANNEL}", str(chan.id))
+        return chan
+
+    # ------------------------------------------------- github tool scout
+    async def _publish_github(self, event: dict) -> None:
+        """Drop a discovered GitHub tool into the private owner-only channel."""
+        channel = await self._get_channel(GITHUB_CHANNEL)
+        if channel is None:
+            channel = await self.ensure_github_channel()
+        if channel is None:
+            return
+        repo = event.get("repo") or {}
+        cat = repo.get("category") or "osint"
+        emb = discord.Embed(
+            title=f"🛠️ {repo.get('name') or repo.get('full_name') or 'repo'}"[:250],
+            url=repo.get("html_url"),
+            color=GITHUB_COLORS.get(cat, 0x2ecc71),
+        )
+        emb.add_field(name="🔗 GitHub", value=repo.get("html_url") or "-", inline=False)
+        emb.add_field(name="Software name",
+                      value=(repo.get("full_name") or repo.get("name") or "-")[:200],
+                      inline=False)
+        desc = (repo.get("description") or "no description provided").strip()
+        emb.add_field(name="Description", value=desc[:1000], inline=False)
+        emb.add_field(name="How it's useful",
+                      value=(repo.get("how_useful") or "-")[:1000], inline=False)
+        facts = f"`{cat}`"
+        if repo.get("language"):
+            facts += f" · {repo['language']}"
+        if repo.get("stars"):
+            facts += f" · {repo['stars']}★"
+        emb.add_field(name="Category", value=facts, inline=False)
+        emb.set_footer(text="asherin • github tool scout")
+        try:
+            await channel.send(embed=emb)
+            await asyncio.to_thread(self.db.mark_github_published,
+                                    repo.get("full_name"))
+        except discord.HTTPException:
+            await asyncio.sleep(2)
+
+    async def ensure_github_channel(self):
+        """Create the PRIVATE channel only the server owner and the bot can see."""
+        guild = self._guild()
+        if guild is None:
+            return None
+        chan = discord.utils.get(guild.text_channels, name=GITHUB_CHANNEL)
+        if chan is None:
+            overwrites = {
+                guild.default_role: discord.PermissionOverwrite(view_channel=False),
+                guild.me: discord.PermissionOverwrite(view_channel=True,
+                                                      send_messages=True),
+            }
+            if guild.owner is not None:
+                overwrites[guild.owner] = discord.PermissionOverwrite(
+                    view_channel=True, send_messages=True)
+            try:
+                chan = await guild.create_text_channel(
+                    GITHUB_CHANNEL, overwrites=overwrites,
+                    topic="Useful osint/cyber/hacking/surveillance/red-team tools "
+                          "found across public GitHub — owner only.")
+            except discord.Forbidden:
+                return None
+        self._chan_cache[GITHUB_CHANNEL] = chan.id
+        self.db.set_state(f"chan_{GITHUB_CHANNEL}", str(chan.id))
         return chan
 
     async def _publish_update(self, event: dict) -> None:

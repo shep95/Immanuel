@@ -29,7 +29,7 @@ def _is_admin(interaction: discord.Interaction, config: Config) -> bool:
 
 
 def create_bot(db: Database, engine: Engine, config: Config,
-               publish_queue=None, forge=None) -> commands.Bot:
+               publish_queue=None, forge=None, scout=None) -> commands.Bot:
     intents = discord.Intents.default()
     intents.members = True  # required for join/leave logging (enable in dev portal)
 
@@ -164,6 +164,14 @@ def create_bot(db: Database, engine: Engine, config: Config,
                 value=f'{fs["patterns_total"]} patterns '
                       f'(✅ {fs["validated"]} validated, {fs["active"]} active) '
                       f'· {fs["passes"]} passes',
+                inline=False)
+        if scout is not None:
+            gs = scout.snapshot()
+            by = gs.get("by_category") or {}
+            top = ", ".join(f'{k}:{v}' for k, v in sorted(by.items())) or "—"
+            emb.add_field(
+                name="GitHub tool scout",
+                value=f'{gs["repos_total"]} tools · {gs["passes"]} passes\n{top}',
                 inline=False)
         await interaction.response.send_message(embed=emb)
 
@@ -316,6 +324,52 @@ def create_bot(db: Database, engine: Engine, config: Config,
             f"```{raw}```\n"
             f"Admin-only: `GET {base}/v1/secrets` (exposed keys, masked).",
             ephemeral=True)
+
+    # ------------------------------------------------ github tool scout
+    @tree.command(
+        name="setup_github_channel",
+        description="Create the PRIVATE owner-only channel for found GitHub tools.")
+    async def setup_github_channel(interaction: discord.Interaction) -> None:
+        if not await admin_only(interaction):
+            return
+        if publisher is None:
+            await interaction.response.send_message(
+                "Publishing is disabled for this deployment.", ephemeral=True)
+            return
+        await interaction.response.defer(thinking=True)
+        chan = await publisher.ensure_github_channel()
+        if chan is None:
+            await interaction.followup.send(
+                "❌ Could not create it — I need **Manage Channels**.")
+            return
+        await interaction.followup.send(
+            f"✅ Private tool channel ready: {chan.mention} (server owner + bot only). "
+            "The scout drops useful osint / cyber-security / hacking / surveillance / "
+            "red-team repos here 24/7 — link, name, description, and how it's useful.")
+
+    @tree.command(name="github_tools",
+                  description="Show recently discovered useful GitHub tools.")
+    @app_commands.describe(
+        category="optional: osint | cyber-security | hacking | surveillance | red-team")
+    async def github_tools(interaction: discord.Interaction,
+                           category: str | None = None) -> None:
+        rows = await asyncio.to_thread(db.list_github_repos, category, 10)
+        if not rows:
+            await interaction.response.send_message(
+                "No tools found yet — the scout is still hunting.")
+            return
+        gs = scout.snapshot() if scout is not None else {"repos_total": len(rows)}
+        emb = discord.Embed(
+            title="🛠️ GitHub tools" + (f" — {category}" if category else ""),
+            description=f'{gs["repos_total"]} total discovered',
+            color=0x2ecc71)
+        for r in rows[:10]:
+            emb.add_field(
+                name=f'{r["full_name"]}'[:230],
+                value=f'{r["html_url"]}\n_{r.get("category","?")} · '
+                      f'{(r.get("description") or "")[:100]}_',
+                inline=False)
+        await interaction.response.send_message(embed=emb)
 
     # ------------------------------------------------------ source commands
     @tree.command(name="addsource", description="Add a seed URL for the crawler to collect.")

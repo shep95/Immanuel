@@ -167,6 +167,30 @@ CREATE TABLE IF NOT EXISTS http_cache (
     updated_at    REAL NOT NULL
 );
 
+-- GitHub tools scout: public repos (software/algorithms) classified as useful
+-- for osint / cyber-security / hacking / surveillance / red-team. Posted to a
+-- private owner-only channel. Raw code is never downloaded — only the metadata.
+CREATE TABLE IF NOT EXISTS github_repos (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    full_name     TEXT UNIQUE NOT NULL,   -- owner/repo
+    html_url      TEXT NOT NULL,
+    name          TEXT,
+    description   TEXT,
+    category      TEXT,                   -- osint|cyber-security|hacking|surveillance|red-team
+    how_useful    TEXT,
+    language      TEXT,
+    stars         INTEGER DEFAULT 0,
+    topics_json   TEXT,
+    matched_json  TEXT,                   -- signal keywords that fired (why it matched)
+    score         INTEGER DEFAULT 0,
+    pushed_at     TEXT,                   -- repo's last push (freshness)
+    published     INTEGER NOT NULL DEFAULT 0,  -- posted to Discord yet
+    discovered_at REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_gh_category ON github_repos(category);
+CREATE INDEX IF NOT EXISTS idx_gh_published ON github_repos(published);
+CREATE INDEX IF NOT EXISTS idx_gh_stars ON github_repos(stars);
+
 -- Downloaded media assets (content-addressed on disk).
 CREATE TABLE IF NOT EXISTS media_assets (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -835,6 +859,91 @@ class Database:
                 (min_versions, limit),
             ).fetchall()
         return [dict(r) for r in rows]
+
+    # -------------------------------------------------------- github_repos
+    def add_github_repo(self, repo: dict[str, Any]) -> bool:
+        """Insert a discovered repo; returns True if newly added (False if seen)."""
+        with self._lock:
+            try:
+                self._conn.execute(
+                    """INSERT INTO github_repos
+                       (full_name, html_url, name, description, category, how_useful,
+                        language, stars, topics_json, matched_json, score, pushed_at,
+                        published, discovered_at)
+                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,0,?)""",
+                    (
+                        repo["full_name"], repo["html_url"], repo.get("name"),
+                        (repo.get("description") or "")[:1000], repo.get("category"),
+                        (repo.get("how_useful") or "")[:1000], repo.get("language"),
+                        int(repo.get("stars", 0)),
+                        json.dumps(repo.get("topics", [])),
+                        json.dumps(repo.get("matched", [])),
+                        int(repo.get("score", 0)), repo.get("pushed_at"),
+                        time.time(),
+                    ),
+                )
+                self._conn.commit()
+                return True
+            except sqlite3.IntegrityError:
+                return False
+
+    def github_repo_exists(self, full_name: str) -> bool:
+        with self._lock:
+            return self._conn.execute(
+                "SELECT 1 FROM github_repos WHERE full_name=? LIMIT 1", (full_name,)
+            ).fetchone() is not None
+
+    def mark_github_published(self, full_name: str) -> None:
+        with self._lock:
+            self._conn.execute(
+                "UPDATE github_repos SET published=1 WHERE full_name=?", (full_name,))
+            self._conn.commit()
+
+    def unpublished_github_repos(self, limit: int = 50) -> list[dict[str, Any]]:
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT * FROM github_repos WHERE published=0 "
+                "ORDER BY stars DESC, id ASC LIMIT ?", (limit,)
+            ).fetchall()
+        return [self._github_row(r) for r in rows]
+
+    def list_github_repos(self, category: str | None = None,
+                          limit: int = 25) -> list[dict[str, Any]]:
+        with self._lock:
+            if category:
+                rows = self._conn.execute(
+                    "SELECT * FROM github_repos WHERE category=? "
+                    "ORDER BY stars DESC, id DESC LIMIT ?", (category, limit)
+                ).fetchall()
+            else:
+                rows = self._conn.execute(
+                    "SELECT * FROM github_repos ORDER BY discovered_at DESC LIMIT ?",
+                    (limit,)
+                ).fetchall()
+        return [self._github_row(r) for r in rows]
+
+    def count_github_repos(self, category: str | None = None) -> int:
+        with self._lock:
+            if category:
+                return self._conn.execute(
+                    "SELECT COUNT(*) FROM github_repos WHERE category=?",
+                    (category,)).fetchone()[0]
+            return self._conn.execute(
+                "SELECT COUNT(*) FROM github_repos").fetchone()[0]
+
+    def github_category_counts(self) -> dict[str, int]:
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT category, COUNT(*) c FROM github_repos GROUP BY category"
+            ).fetchall()
+        return {r["category"] or "unknown": r["c"] for r in rows}
+
+    @staticmethod
+    def _github_row(r: sqlite3.Row) -> dict[str, Any]:
+        d = dict(r)
+        d["topics"] = json.loads(d.pop("topics_json") or "[]")
+        d["matched"] = json.loads(d.pop("matched_json") or "[]")
+        return d
 
     def media_exists(self, sha256: str) -> bool:
         with self._lock:
