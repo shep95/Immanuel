@@ -206,6 +206,25 @@ CREATE TABLE IF NOT EXISTS media_assets (
     created_at    REAL NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_media_page ON media_assets(page_url);
+
+-- /hack runs: a Strix AI-pentest run OR a deterministic recon run. Findings are
+-- stored as JSON; raw exploit payloads are never persisted. Admin-only surface.
+CREATE TABLE IF NOT EXISTS hack_runs (
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    target         TEXT NOT NULL,
+    engine         TEXT,               -- strix | recon
+    status         TEXT,               -- running | completed | failed | timeout | unavailable
+    instruction    TEXT,
+    summary        TEXT,
+    findings_json  TEXT,               -- list of {severity,title,detail,...}
+    findings_count INTEGER DEFAULT 0,
+    report_path    TEXT,               -- downloadable report file on disk
+    requested_by   TEXT,
+    started_at     REAL NOT NULL,
+    finished_at    REAL
+);
+CREATE INDEX IF NOT EXISTS idx_hack_started ON hack_runs(started_at);
+CREATE INDEX IF NOT EXISTS idx_hack_status ON hack_runs(status);
 """
 
 # Columns added after v0.1 — applied idempotently to already-created DBs.
@@ -1001,3 +1020,55 @@ class Database:
         with self._lock:
             return self._conn.execute(
                 "SELECT COUNT(*) FROM media_assets").fetchone()[0]
+
+    # ------------------------------------------------------------ hack_runs
+    def add_hack_run(self, target: str, engine: str, instruction: str | None,
+                     requested_by: str | None) -> int:
+        with self._lock:
+            cur = self._conn.execute(
+                """INSERT INTO hack_runs
+                   (target, engine, status, instruction, summary, findings_json,
+                    findings_count, report_path, requested_by, started_at, finished_at)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,NULL)""",
+                (target, engine, "running", instruction, "", "[]", 0, None,
+                 requested_by, time.time()),
+            )
+            self._conn.commit()
+            return int(cur.lastrowid)
+
+    def finish_hack_run(self, run_id: int, *, status: str, summary: str,
+                        findings: list[dict[str, Any]], engine: str | None = None,
+                        report_path: str | None = None) -> None:
+        with self._lock:
+            self._conn.execute(
+                """UPDATE hack_runs SET status=?, summary=?, findings_json=?,
+                       findings_count=?, report_path=?, finished_at=?,
+                       engine=COALESCE(?, engine) WHERE id=?""",
+                (status, summary[:4000], json.dumps(findings),
+                 len(findings), report_path, time.time(), engine, run_id),
+            )
+            self._conn.commit()
+
+    def get_hack_run(self, run_id: int) -> dict[str, Any] | None:
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT * FROM hack_runs WHERE id=?", (run_id,)).fetchone()
+        return self._hack_row(row) if row else None
+
+    def recent_hack_runs(self, limit: int = 20) -> list[dict[str, Any]]:
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT * FROM hack_runs ORDER BY started_at DESC LIMIT ?",
+                (limit,)).fetchall()
+        return [self._hack_row(r) for r in rows]
+
+    def count_hack_runs(self) -> int:
+        with self._lock:
+            return self._conn.execute(
+                "SELECT COUNT(*) FROM hack_runs").fetchone()[0]
+
+    @staticmethod
+    def _hack_row(r: sqlite3.Row) -> dict[str, Any]:
+        d = dict(r)
+        d["findings"] = json.loads(d.pop("findings_json") or "[]")
+        return d

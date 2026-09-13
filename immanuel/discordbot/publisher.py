@@ -28,6 +28,8 @@ UPDATES_CHANNEL = "immanuel-updates"
 SECRETS_CHANNEL = "asherin-api-keys"
 # Private OWNER-ONLY channel where useful GitHub tools are dropped.
 GITHUB_CHANNEL = "asherin-github-tools"
+# Private channel for /hack pentest runs (owner + bot only).
+HACK_CHANNEL = "asherin-hack"
 # Category that holds the dynamic per-topic / per-company channels.
 ORGANIZED_CATEGORY = "🗂️ asherin channels"
 # Public media category + one channel per file-type bucket.
@@ -346,6 +348,35 @@ class Publisher:
                 return None
         self._chan_cache[GITHUB_CHANNEL] = chan.id
         self.db.set_state(f"chan_{GITHUB_CHANNEL}", str(chan.id))
+        return chan
+
+    async def ensure_hack_channel(self):
+        """Create the PRIVATE channel only the server owner and the bot can see."""
+        guild = self._guild()
+        if guild is None:
+            return None
+        existing = await self._get_channel(HACK_CHANNEL)
+        if existing is not None:
+            return existing
+        chan = discord.utils.get(guild.text_channels, name=HACK_CHANNEL)
+        if chan is None:
+            overwrites = {
+                guild.default_role: discord.PermissionOverwrite(view_channel=False),
+                guild.me: discord.PermissionOverwrite(view_channel=True,
+                                                      send_messages=True),
+            }
+            if guild.owner is not None:
+                overwrites[guild.owner] = discord.PermissionOverwrite(
+                    view_channel=True, send_messages=True)
+            try:
+                chan = await guild.create_text_channel(
+                    HACK_CHANNEL, overwrites=overwrites,
+                    topic="/hack pentest runs (Strix AI + deterministic recon) — "
+                          "findings & reports, admin only.")
+            except discord.Forbidden:
+                return None
+        self._chan_cache[HACK_CHANNEL] = chan.id
+        self.db.set_state(f"chan_{HACK_CHANNEL}", str(chan.id))
         return chan
 
     # ---------------------------------------------- media + transcripts

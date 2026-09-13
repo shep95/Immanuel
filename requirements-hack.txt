@@ -1,0 +1,11 @@
+# Optional: the Strix AI-pentest engine behind /hack (engine=strix / auto).
+# The deterministic /hack recon engine needs NONE of this — it works out of the box.
+#
+# Strix runs autonomous AI hacker agents inside a Docker sandbox and validates
+# findings with real PoCs. To use it:
+#   1) pip install -r requirements-hack.txt        (Python 3.12+)
+#   2) install + start Docker
+#   3) export STRIX_LLM="openrouter/z-ai/glm-5.3"  (any supported provider)
+#      export LLM_API_KEY="your-api-key"
+# Then /hack <target> engine:strix (or engine:auto) drives it.
+strix-agent>=1.6.2

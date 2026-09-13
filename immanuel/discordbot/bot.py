@@ -29,7 +29,8 @@ def _is_admin(interaction: discord.Interaction, config: Config) -> bool:
 
 
 def create_bot(db: Database, engine: Engine, config: Config,
-               publish_queue=None, forge=None, scout=None) -> commands.Bot:
+               publish_queue=None, forge=None, scout=None,
+               hack=None) -> commands.Bot:
     intents = discord.Intents.default()
     intents.members = True  # required for join/leave logging (enable in dev portal)
 
@@ -437,6 +438,138 @@ def create_bot(db: Database, engine: Engine, config: Config,
                       f'{(r.get("description") or "")[:100]}_',
                 inline=False)
         await interaction.response.send_message(embed=emb)
+
+    # ------------------------------------------------------ /hack pentest
+    def _hack_embed(result: dict, target: str) -> discord.Embed:
+        status = result.get("status", "?")
+        color = {"completed": 0x2ecc71, "failed": 0xe74c3c,
+                 "timeout": 0xe67e22, "unavailable": 0x95a5a6}.get(status, 0x3498db)
+        findings = result.get("findings") or []
+        emb = discord.Embed(
+            title=f"🛡️ /hack — {target}"[:250],
+            description=(f"engine: **{result.get('engine','?')}** · status: "
+                         f"**{status}** · run #{result.get('run_id','?')}"),
+            color=color)
+        emb.add_field(name="summary", value=(result.get("summary") or "—")[:1000],
+                      inline=False)
+        sev_order = {"high": 0, "medium": 1, "low": 2, "info": 3}
+        for f in sorted(findings, key=lambda x: sev_order.get(
+                str(x.get("severity", "info")).lower(), 3))[:10]:
+            sev = str(f.get("severity", "info")).upper()
+            val = (f.get("detail") or f.get("masked") or "")[:200] or "—"
+            emb.add_field(name=f"[{sev}] {str(f.get('title',''))[:200]}",
+                          value=val, inline=False)
+        if len(findings) > 10:
+            emb.set_footer(text=f"+{len(findings) - 10} more findings — see report")
+        return emb
+
+    @tree.command(
+        name="hack",
+        description="Run an AI pentest (Strix) or deterministic recon on a target.")
+    @app_commands.describe(
+        target="URL, domain, IP, or repo to test",
+        instruction="optional focus, e.g. 'check auth and IDOR'",
+        engine="auto (default) | strix | recon")
+    async def hack_cmd(interaction: discord.Interaction, target: str,
+                       instruction: str | None = None,
+                       engine: str | None = None) -> None:
+        if not await admin_only(interaction):
+            return
+        if hack is None or not config.enable_hack:
+            await interaction.response.send_message(
+                "⛔ /hack is disabled for this deployment.", ephemeral=True)
+            return
+        target = (target or "").strip()
+        if not target:
+            await interaction.response.send_message(
+                "❌ Give me a target (URL, domain, IP, or repo).", ephemeral=True)
+            return
+        engine = (engine or "").strip().lower() or None
+        if engine and engine not in ("auto", "strix", "recon"):
+            await interaction.response.send_message(
+                "❌ engine must be auto, strix, or recon.", ephemeral=True)
+            return
+
+        await interaction.response.defer(thinking=True, ephemeral=True)
+        hack_chan = await publisher.ensure_hack_channel() if publisher else None
+        avail = await asyncio.to_thread(hack.availability)
+        strix_ready = avail["strix"]["ready"]
+        picked = engine or config.hack_engine
+        if picked == "auto":
+            picked = "strix" if strix_ready else "recon"
+
+        async def _job() -> None:
+            try:
+                result = await hack.run(target, instruction, engine=engine,
+                                        requested_by=str(interaction.user))
+            except Exception as exc:  # pragma: no cover - safety net
+                if hack_chan is not None:
+                    await hack_chan.send(f"❌ /hack {target} crashed: {exc}")
+                return
+            emb = _hack_embed(result, target)
+            rp = result.get("report_path")
+            file = None
+            if rp:
+                try:
+                    file = discord.File(rp)
+                except Exception:
+                    file = None
+            if hack_chan is not None:
+                await hack_chan.send(embed=emb, file=file)
+            else:
+                await post_admin_log(
+                    interaction.guild,
+                    f"/hack {target}: {result.get('status')} — "
+                    f"{result.get('summary')}")
+
+        asyncio.create_task(_job())
+
+        note = ("🧠 **Strix** AI agents (docker sandbox)" if picked == "strix"
+                else "🔎 **recon** (deterministic, non-AI)")
+        if picked == "strix" and not strix_ready:
+            note += ("\n_note: strix isn't runnable here (" +
+                     "; ".join(avail["strix"]["reasons"]) + ") — it will fall "
+                     "back to recon if you used auto._")
+        where = hack_chan.mention if hack_chan is not None else "the admin log"
+        await interaction.followup.send(
+            f"▶️ started /hack on `{target}` using {note}\n"
+            f"results will post to {where} when the run finishes.")
+
+    @tree.command(
+        name="setup_hack_channel",
+        description="Create the PRIVATE owner-only channel for /hack results.")
+    async def setup_hack_channel(interaction: discord.Interaction) -> None:
+        if not await admin_only(interaction):
+            return
+        if publisher is None:
+            await interaction.response.send_message(
+                "Publishing is disabled for this deployment.", ephemeral=True)
+            return
+        await interaction.response.defer(thinking=True)
+        chan = await publisher.ensure_hack_channel()
+        if chan is None:
+            await interaction.followup.send(
+                "❌ Could not create it — I need **Manage Channels**.")
+            return
+        await interaction.followup.send(
+            f"✅ Private hack channel ready: {chan.mention} (server owner + bot only).")
+
+    @tree.command(name="hack_runs", description="List recent /hack runs (admin).")
+    async def hack_runs(interaction: discord.Interaction) -> None:
+        if not await admin_only(interaction):
+            return
+        rows = await asyncio.to_thread(db.recent_hack_runs, 15)
+        if not rows:
+            await interaction.response.send_message(
+                "No /hack runs yet. Start one with /hack.", ephemeral=True)
+            return
+        emb = discord.Embed(title="🛡️ recent /hack runs", color=0x3498db)
+        for r in rows[:15]:
+            emb.add_field(
+                name=f"#{r['id']} · {r['engine']} · {r['status']}"[:230],
+                value=f"{r['target'][:80]} — {r['findings_count']} finding(s)",
+                inline=False)
+        await interaction.response.send_message(embed=emb, ephemeral=True)
 
     # ------------------------------------------------------ source commands
     @tree.command(name="addsource", description="Add a seed URL for the crawler to collect.")

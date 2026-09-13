@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from urllib.parse import urlparse
 
 import httpx
@@ -20,6 +20,7 @@ class FetchResult:
     error: str | None = None
     etag: str | None = None
     last_modified: str | None = None
+    headers: dict = field(default_factory=dict)  # lower-cased response headers
 
 
 class Fetcher:
@@ -80,12 +81,14 @@ class Fetcher:
                     content_type = resp.headers.get("content-type", "")
                     etag = resp.headers.get("etag")
                     last_modified = resp.headers.get("last-modified")
+                    hdrs = {k.lower(): v for k, v in resp.headers.items()}
                     # 304 Not Modified: no body to read (conditional GET hit)
                     if resp.status_code == 304:
                         return FetchResult(
                             url=url, final_url=str(resp.url), status=304,
                             content_type=content_type, body=b"", ok=False,
                             error="HTTP 304", etag=etag, last_modified=last_modified,
+                            headers=hdrs,
                         )
                     chunks, total = [], 0
                     async for chunk in resp.aiter_bytes():
@@ -105,6 +108,7 @@ class Fetcher:
                         error=None if ok else f"HTTP {resp.status_code}",
                         etag=etag,
                         last_modified=last_modified,
+                        headers=hdrs,
                     )
             except Exception as e:  # network/timeout/etc.
                 return FetchResult(url, url, 0, "", b"", False, str(e))

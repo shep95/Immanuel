@@ -102,6 +102,24 @@ With `DEEP_EXTRACT=true` (default) every page is **fully scraped**, not merely l
   to **transcripts** (needs the optional `youtube-transcript-api`) and posted, with the
   **thumbnail**, into a **🎬 asherin youtube → `#asherin-transcripts`** channel (long
   transcripts attach as a `.txt`).
+
+### `/hack` — AI pentest + deterministic recon
+
+`/hack <target>` runs a security assessment and drops the report into a private, owner-only
+`#asherin-hack` channel. Two engines behind one command:
+
+- **`strix`** — drives the open-source [Strix](https://github.com/usestrix/strix) autonomous
+  AI-pentesting agents (real exploit validation with working PoCs). Needs, at runtime: the
+  `strix` CLI (`pip install -r requirements-hack.txt`, Python 3.12+), **Docker** running, and an
+  LLM key (`STRIX_LLM` + `LLM_API_KEY`). See `requirements-hack.txt`.
+- **`recon`** — Immanuel's own **deterministic, non-AI** recon: security-header posture, tech
+  fingerprint, exposed-secret scan (masked), and a bounded same-host surface map. No Docker, no
+  LLM key, works offline — this is the always-on fallback.
+
+`engine:auto` (default) uses Strix when it's runnable, otherwise recon. Force with
+`engine:strix` or `engine:recon`. Findings are observational — no exploitation is performed by
+the recon engine, and raw secrets are never stored (only masked values). Admin-only, with API
+endpoints `GET /v1/hack/runs`, `GET /v1/hack/runs/{id}`, and `GET /v1/hack/availability`.
 - **Intel data-report** (`BUILD_INTEL_REPORT=true`) — per page, Immanuel compiles a report of
   the open metadata, the link/media graph, and any secrets found — the raw material for a
   domain-wide **10-way hop** (`MAX_HOPS`) across every connected page and data source.
@@ -176,6 +194,9 @@ raw code is never downloaded — only public repo metadata.
 | `/search <query> [category] [company] [topic]` | anyone | **asherin.eng** — query everything collected, like a working search engine |
 | `/setup_asherin_eng` | admin | Create the `#asherin-eng` search channel |
 | `/setup_media_channels` | admin | Create public per-file-type media channels + a `#asherin-transcripts` channel |
+| `/hack` | admin | Run an AI pentest (Strix) or deterministic recon on a target (`target`, `instruction`, `engine`) |
+| `/hack_runs` | admin | List recent `/hack` runs |
+| `/setup_hack_channel` | admin | Create the private owner-only `#asherin-hack` results channel |
 | `/patterns` | **admin** | Show the Pattern Forge library (learned patterns + lifecycle), ephemeral |
 | `/skills-download [only_validated]` | **admin** | Download all learned pattern skills as a `.txt` file (ephemeral, admin only) |
 | `/intel` | anyone | Show the most recent intel data-reports |

@@ -113,3 +113,19 @@ def test_secrets_requires_admin(client):
                   "sha256:1", "ctx", "high")
     r = c.get("/v1/secrets", headers={"X-API-Key": admin_key})
     assert r.status_code == 200 and r.json()["count"] == 1
+
+
+def test_hack_runs_requires_admin(client):
+    c, db = client
+    read_key = generate_api_key(db, owner="tester", scopes="read")
+    assert c.get("/v1/hack/runs", headers={"X-API-Key": read_key}).status_code == 403
+    admin_key = generate_api_key(db, owner="admin", scopes="read admin")
+    rid = db.add_hack_run("https://ex.com", "recon", None, "admin")
+    db.finish_hack_run(rid, status="completed", summary="1 finding",
+                       findings=[{"severity": "low", "title": "Missing CSP"}])
+    r = c.get("/v1/hack/runs", headers={"X-API-Key": admin_key})
+    assert r.status_code == 200 and r.json()["count"] == 1
+    assert r.json()["runs"][0]["findings_count"] == 1
+    # single run
+    r2 = c.get(f"/v1/hack/runs/{rid}", headers={"X-API-Key": admin_key})
+    assert r2.status_code == 200 and r2.json()["engine"] == "recon"

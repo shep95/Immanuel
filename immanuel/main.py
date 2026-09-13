@@ -21,6 +21,7 @@ from .config import Config
 from .db import Database
 from .engine import Engine
 from .githubscout import GitHubScout
+from .hack import HackService
 from .patternforge.runner import PatternForge
 
 
@@ -44,8 +45,10 @@ async def _run() -> None:
     # GitHub tool scout: finds useful osint/cyber/hacking/surveillance/red-team
     # repos across public GitHub 24/7 and drops them into the owner-only channel.
     scout = GitHubScout(db, config, emit=engine._emit)
+    # /hack: Strix AI-pentest engine + deterministic recon fallback.
+    hack = HackService(db, config)
 
-    app = create_app(db, engine, forge, scout)
+    app = create_app(db, engine, forge, scout, hack)
     uv_config = uvicorn.Config(app, host=config.api_host, port=config.api_port,
                                log_level="info", loop="asyncio")
     server = uvicorn.Server(uv_config)
@@ -62,7 +65,7 @@ async def _run() -> None:
         from .discordbot.bot import create_bot
 
         bot = create_bot(db, engine, config, publish_queue=publish_queue,
-                         forge=forge, scout=scout)
+                         forge=forge, scout=scout, hack=hack)
         tasks.append(asyncio.create_task(bot.start(config.discord_token), name="discord"))
     else:
         print("[immanuel] DISCORD_TOKEN not set — running API + engine only.")

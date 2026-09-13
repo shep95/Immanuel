@@ -16,7 +16,7 @@ from ..keys import verify_api_key
 
 
 def create_app(db: Database, engine: Any = None, forge: Any = None,
-               scout: Any = None) -> FastAPI:
+               scout: Any = None, hack: Any = None) -> FastAPI:
     app = FastAPI(
         title="Immanuel API",
         version="0.2.0",
@@ -141,6 +141,28 @@ def create_app(db: Database, engine: Any = None, forge: Any = None,
     def secrets(_: dict = Depends(require_admin),
                 limit: int = Query(default=50, ge=1, le=200)) -> dict:
         return {"count": db.count_secrets(), "findings": db.recent_secrets(limit)}
+
+    # ---- /hack runs (ADMIN ONLY) -----------------------------------------
+    @app.get("/v1/hack/availability")
+    def hack_availability(_: dict = Depends(require_admin)) -> dict:
+        if hack is None:
+            return {"enabled": False, "recon": {"ready": True},
+                    "strix": {"ready": False,
+                              "reasons": ["hack service not wired"]}}
+        return hack.availability()
+
+    @app.get("/v1/hack/runs")
+    def hack_runs(_: dict = Depends(require_admin),
+                  limit: int = Query(default=20, ge=1, le=200)) -> dict:
+        return {"count": db.count_hack_runs(),
+                "runs": db.recent_hack_runs(limit)}
+
+    @app.get("/v1/hack/runs/{run_id}")
+    def hack_run(run_id: int, _: dict = Depends(require_admin)) -> dict:
+        row = db.get_hack_run(run_id)
+        if not row:
+            raise HTTPException(status_code=404, detail="not found")
+        return row
 
     @app.get("/v1/items/{item_id}")
     def get_item(item_id: int, _: dict = Depends(require_key)) -> dict:

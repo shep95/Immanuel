@@ -31,6 +31,13 @@ def _csv(name: str) -> list[str]:
     return [x.strip() for x in raw.split(",") if x.strip()]
 
 
+def _float(name: str, default: float) -> float:
+    try:
+        return float(os.getenv(name, "").strip())
+    except (TypeError, ValueError):
+        return default
+
+
 @dataclass
 class Config:
     # Discord
@@ -128,6 +135,21 @@ class Config:
     github_per_category: int = 30        # results pulled per category per pass
     github_max_per_pass: int = 60        # hard cap on repos classified per pass
 
+    # --- /hack: drive the Strix AI-pentest engine + a deterministic recon fallback ---
+    enable_hack: bool = True
+    # "auto" runs Strix when it's installed + docker + an LLM key are present,
+    # otherwise falls back to Immanuel's own non-AI recon. Force with "strix"/"recon".
+    hack_engine: str = "auto"
+    strix_bin: str = "strix"             # CLI name / path (pip install strix-agent)
+    strix_llm: str = ""                  # e.g. openrouter/z-ai/glm-5.3 (STRIX_LLM)
+    strix_scan_mode: str = "standard"    # quick | standard | deep
+    strix_max_budget_usd: float = 2.0    # hard LLM spend cap per run
+    strix_max_turns: int = 0             # 0 = use strix default
+    hack_timeout_seconds: int = 1800     # kill a strix run after this long
+    hack_runs_path: str = "./data/hack"  # strix_runs/ + downloadable reports land here
+    hack_max_recon_pages: int = 25       # recon fallback page budget
+    hack_recon_hops: int = 1             # recon fallback same-host hop depth
+
     @classmethod
     def from_env(cls) -> "Config":
         guild = os.getenv("DISCORD_GUILD_ID", "").strip()
@@ -203,4 +225,16 @@ class Config:
             github_min_stars=_int("GITHUB_MIN_STARS", 5),
             github_per_category=_int("GITHUB_PER_CATEGORY", 30),
             github_max_per_pass=_int("GITHUB_MAX_PER_PASS", 60),
+            enable_hack=_bool("ENABLE_HACK", True),
+            hack_engine=(os.getenv("HACK_ENGINE", "auto").strip().lower() or "auto"),
+            strix_bin=os.getenv("STRIX_BIN", "strix").strip() or "strix",
+            strix_llm=(os.getenv("STRIX_LLM", "") or "").strip(),
+            strix_scan_mode=(os.getenv("STRIX_SCAN_MODE", "standard").strip().lower()
+                             or "standard"),
+            strix_max_budget_usd=_float("STRIX_MAX_BUDGET_USD", 2.0),
+            strix_max_turns=_int("STRIX_MAX_TURNS", 0),
+            hack_timeout_seconds=_int("HACK_TIMEOUT_SECONDS", 1800),
+            hack_runs_path=os.getenv("HACK_RUNS_PATH", "./data/hack").strip(),
+            hack_max_recon_pages=_int("HACK_MAX_RECON_PAGES", 25),
+            hack_recon_hops=_int("HACK_RECON_HOPS", 1),
         )
