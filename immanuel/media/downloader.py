@@ -13,7 +13,8 @@ import hashlib
 import os
 from urllib.parse import urlparse
 
-_EXT_FOR_TYPE = {"image": ".img", "audio": ".aud", "video": ".vid"}
+_EXT_FOR_TYPE = {"image": ".img", "audio": ".aud", "video": ".vid",
+                 "document": ".doc", "archive": ".arc", "other": ".bin"}
 
 
 def _guess_ext(url: str, content_type: str, media_type: str) -> str:

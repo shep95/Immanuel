@@ -89,12 +89,19 @@ With `DEEP_EXTRACT=true` (default) every page is **fully scraped**, not merely l
   never stored — only a sha256 fingerprint + preview) and routed to a **private admin-only**
   `#asherin-api-keys` channel (`/setup_secrets_channel`). Read them via `GET /v1/secrets`
   with an **admin** key (`/adminkey`).
-- **Media download & import** (`DOWNLOAD_MEDIA=true`) — images/audio/video are downloaded to
-  a content-addressed store, deduped by hash, with open image metadata (dimensions + EXIF/GPS
-  when `Pillow` is installed).
+- **Media → its own public categories** (`PUBLISH_MEDIA=true`, default) — **every file type**
+  found on a page (images, audio, video, documents/pdf/docx/csv, archives/zip, other) is sorted
+  into its own channel under a **📁 asherin media** category (`media-images`, `media-audio`,
+  `media-video`, `media-documents`, `media-archives`, `media-files`). This happens even when
+  bytes aren't downloaded — the references are still categorized. Pre-create with
+  `/setup_media_channels`.
+- **Media download & import** (`DOWNLOAD_MEDIA=true`) — those files are also downloaded to a
+  content-addressed store, deduped by hash, with open image metadata (dimensions + EXIF/GPS
+  when `Pillow` is installed); downloaded items are flagged in the media channels.
 - **YouTube → transcripts + thumbnails** (`ENABLE_YOUTUBE=true`) — YouTube links are converted
-  to **transcripts** (needs the optional `youtube-transcript-api`) and their **thumbnails** are
-  imported.
+  to **transcripts** (needs the optional `youtube-transcript-api`) and posted, with the
+  **thumbnail**, into a **🎬 asherin youtube → `#asherin-transcripts`** channel (long
+  transcripts attach as a `.txt`).
 - **Intel data-report** (`BUILD_INTEL_REPORT=true`) — per page, Immanuel compiles a report of
   the open metadata, the link/media graph, and any secrets found — the raw material for a
   domain-wide **10-way hop** (`MAX_HOPS`) across every connected page and data source.
@@ -168,6 +175,7 @@ raw code is never downloaded — only public repo metadata.
 | `/set_channel_perms <channel> <role> <can_view>` | admin | Allow/deny a role from viewing a channel |
 | `/search <query> [category] [company] [topic]` | anyone | **asherin.eng** — query everything collected, like a working search engine |
 | `/setup_asherin_eng` | admin | Create the `#asherin-eng` search channel |
+| `/setup_media_channels` | admin | Create public per-file-type media channels + a `#asherin-transcripts` channel |
 | `/patterns` | **admin** | Show the Pattern Forge library (learned patterns + lifecycle), ephemeral |
 | `/skills-download [only_validated]` | **admin** | Download all learned pattern skills as a `.txt` file (ephemeral, admin only) |
 | `/intel` | anyone | Show the most recent intel data-reports |

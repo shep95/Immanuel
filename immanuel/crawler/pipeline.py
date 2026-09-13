@@ -48,6 +48,8 @@ class ProcessResult:
     lang: str | None = None
     secrets: list = field(default_factory=list)      # masked findings only
     media_assets: list = field(default_factory=list)  # downloaded assets
+    media_items: list = field(default_factory=list)   # typed media catalog (all file types)
+    transcript: dict | None = None                    # youtube transcript payload
     code: list = field(default_factory=list)
     intel: bool = False
 
@@ -71,6 +73,24 @@ class ProcessResult:
             "secrets_count": len(self.secrets),
             "media_downloaded": len(self.media_assets),
         }
+
+    def media_event(self) -> dict:
+        """Typed media catalog for the per-file-type media channels."""
+        return {
+            "kind": "media",
+            "page_url": self.url,
+            "title": self.title,
+            "domain": self.domain,
+            "company": self.company,
+            "items": self.media_items,
+        }
+
+    def transcript_event(self) -> dict:
+        """YouTube transcript payload for the transcripts channel."""
+        e = dict(self.transcript or {})
+        e["kind"] = "transcript"
+        e["domain"] = self.domain
+        return e
 
 
 async def _fetch(fetcher, url, extra_headers):
@@ -129,11 +149,13 @@ async def process_url(
     ex = extract(final_url, res.content_type, res.body)
 
     # --- YouTube: fold transcript into text, capture thumbnail (before hash) --
+    yt_payload = None
     if config is not None and getattr(config, "enable_youtube", False):
         from ..media.youtube import is_youtube, process_youtube
         if is_youtube(final_url):
             yt = process_youtube(final_url, getattr(config, "youtube_langs", ["en"]))
             if yt:
+                yt_payload = yt
                 if yt.get("transcript"):
                     ex.text = (ex.text + "\n\n[youtube transcript]\n"
                                + yt["transcript"])[:200000]
@@ -270,6 +292,45 @@ async def process_url(
         except Exception:
             pass
 
+    # --- typed media catalog: EVERY file type -> its own channel bucket ------
+    media_items: list[dict] = []
+    if config is not None and getattr(config, "publish_media", True):
+        from ..media.filetypes import classify_media, is_file_link
+        downloaded_urls = {a.get("source_url") for a in media_assets}
+        seen: set[str] = set()
+        cap = max(1, getattr(config, "max_media_per_page", 20) * 3)
+
+        def _add(u, declared=None, content_type=None, extra=None):
+            if (not u or not u.startswith(("http://", "https://"))
+                    or u in seen or len(media_items) >= cap):
+                return
+            seen.add(u)
+            item = {"type": classify_media(u, content_type, declared), "url": u,
+                    "downloaded": u in downloaded_urls}
+            if extra:
+                item.update(extra)
+            media_items.append(item)
+
+        for m in ex.media:                       # images/audio/video refs
+            _add(m.get("url"), m.get("type"), m.get("content_type"),
+                 {"alt": m["alt"]} if m.get("alt") else None)
+        for link in found_links:                 # pdf/docx/zip/... as file links
+            if is_file_link(link):
+                _add(link)
+
+    # --- youtube transcript payload for the transcripts channel -------------
+    transcript = None
+    if (config is not None and getattr(config, "publish_transcripts", True)
+            and yt_payload and yt_payload.get("transcript")):
+        transcript = {
+            "page_url": final_url,
+            "video_id": yt_payload.get("video_id"),
+            "title": ex.title,
+            "thumbnail": yt_payload.get("thumbnail"),
+            "transcript": yt_payload["transcript"],
+            "lang": ex.lang,
+        }
+
     return ProcessResult(
         url=final_url,
         stored=stored,
@@ -295,6 +356,8 @@ async def process_url(
         lang=ex.lang,
         secrets=secrets_found,
         media_assets=media_assets,
+        media_items=media_items if config is not None else [],
+        transcript=transcript,
         code=ex.code,
         intel=intel_built,
     )

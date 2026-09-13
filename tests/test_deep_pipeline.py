@@ -78,3 +78,29 @@ async def test_legacy_no_config_unchanged_behavior(db):
     out = await process_url("https://acme.com/p", FakeFetcher(res), FakeRobots(), db)
     # without config: no deep fields computed
     assert out.company is None and out.topic is None and out.secrets == []
+    assert out.media_items == [] and out.transcript is None
+
+
+MEDIA_HTML = (
+    b"<!doctype html><html lang='en'><head><title>Downloads</title></head>"
+    b"<body><img src='https://cdn.acme.com/pic.png'>"
+    b"<a href='https://acme.com/report.pdf'>report</a>"
+    b"<a href='https://acme.com/audio/clip.mp3'>audio</a>"
+    b"<a href='https://acme.com/bundle.zip'>zip</a>"
+    b"<a href='https://acme.com/about'>about</a></body></html>"
+)
+
+
+@pytest.mark.asyncio
+async def test_media_catalog_covers_all_file_types(db):
+    res = FetchResult("https://acme.com/dl", "https://acme.com/dl", 200,
+                      "text/html", MEDIA_HTML, True)
+    out = await process_url("https://acme.com/dl", FakeFetcher(res), FakeRobots(),
+                            db, config=_cfg())
+    buckets = {it["type"] for it in out.media_items}
+    assert {"image", "document", "audio", "archive"}.issubset(buckets)
+    # the plain page link is not treated as a file
+    assert all("/about" not in it["url"] for it in out.media_items)
+    # media_event is well-formed for the publisher
+    ev = out.media_event()
+    assert ev["kind"] == "media" and ev["items"] and ev["page_url"].endswith("/dl")

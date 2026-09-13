@@ -136,6 +136,11 @@ class AgentSwarm:
             if self.config.publish_to_discord and res.secrets:
                 self.engine._emit({"kind": "secrets", "url": res.url,
                                    "domain": res.domain, "secrets": res.secrets})
+            if self.config.publish_to_discord and (res.is_new_page or res.is_update):
+                if getattr(self.config, "publish_media", True) and res.media_items:
+                    self.engine._emit(res.media_event())
+                if getattr(self.config, "publish_transcripts", True) and res.transcript:
+                    self.engine._emit(res.transcript_event())
             ok = res.stored or res.unchanged or res.is_new_page or res.is_update
             self.db.mark_url_crawled(url, ok=ok)
             # fan out one more hop, if within the hop budget

@@ -30,6 +30,24 @@ SECRETS_CHANNEL = "asherin-api-keys"
 GITHUB_CHANNEL = "asherin-github-tools"
 # Category that holds the dynamic per-topic / per-company channels.
 ORGANIZED_CATEGORY = "🗂️ asherin channels"
+# Public media category + one channel per file-type bucket.
+MEDIA_CATEGORY = "📁 asherin media"
+MEDIA_BUCKET_CHANNELS = {
+    "image": "media-images",
+    "audio": "media-audio",
+    "video": "media-video",
+    "document": "media-documents",
+    "archive": "media-archives",
+    "other": "media-files",
+}
+# YouTube transcripts channel (+ its category).
+YOUTUBE_CATEGORY = "🎬 asherin youtube"
+TRANSCRIPTS_CHANNEL = "asherin-transcripts"
+
+MEDIA_COLORS = {
+    "image": 0x16a085, "audio": 0x8e44ad, "video": 0x2980b9,
+    "document": 0xd35400, "archive": 0x7f8c8d, "other": 0x95a5a6,
+}
 
 # Colors per GitHub tool family.
 GITHUB_COLORS = {
@@ -144,6 +162,10 @@ class Publisher:
             await self._publish_secrets(event)
         elif kind == "github":
             await self._publish_github(event)
+        elif kind == "media":
+            await self._publish_media(event)
+        elif kind == "transcript":
+            await self._publish_transcript(event)
         else:
             await self._publish_new(event)
 
@@ -325,6 +347,109 @@ class Publisher:
         self._chan_cache[GITHUB_CHANNEL] = chan.id
         self.db.set_state(f"chan_{GITHUB_CHANNEL}", str(chan.id))
         return chan
+
+    # ---------------------------------------------- media + transcripts
+    async def _ensure_named_channel(self, name: str, category_name: str):
+        """Get-or-create a public channel under a named category."""
+        existing = await self._get_channel(name)
+        if existing is not None:
+            return existing
+        guild = self._guild()
+        if guild is None:
+            return None
+        chan = discord.utils.get(guild.text_channels, name=name)
+        if chan is None:
+            category = discord.utils.get(guild.categories, name=category_name)
+            if category is None:
+                try:
+                    category = await guild.create_category(category_name)
+                except discord.Forbidden:
+                    category = None
+            try:
+                chan = await guild.create_text_channel(name, category=category)
+            except discord.Forbidden:
+                return None
+        self._chan_cache[name] = chan.id
+        self.db.set_state(f"chan_{name}", str(chan.id))
+        return chan
+
+    async def _publish_media(self, event: dict) -> None:
+        """Route a page's media into per-file-type channels (image/doc/zip/...)."""
+        items = event.get("items") or []
+        if not items:
+            return
+        groups: dict[str, list] = {}
+        for it in items:
+            groups.setdefault(it.get("type") or "other", []).append(it)
+        page = event.get("page_url")
+        for bucket, its in groups.items():
+            name = MEDIA_BUCKET_CHANNELS.get(bucket, MEDIA_BUCKET_CHANNELS["other"])
+            chan = await self._ensure_named_channel(name, MEDIA_CATEGORY)
+            if chan is None:
+                continue
+            emb = discord.Embed(
+                title=f"{bucket} · {(event.get('title') or page or 'page')}"[:250],
+                url=page, color=MEDIA_COLORS.get(bucket, 0x95a5a6))
+            if event.get("company"):
+                emb.add_field(name="Company", value=str(event["company"])[:60],
+                              inline=True)
+            emb.add_field(name="Count", value=str(len(its)), inline=True)
+            emb.add_field(name="From page", value=(page or "-")[:200], inline=False)
+            lines = []
+            for it in its[:15]:
+                tag = " ⬇️saved" if it.get("downloaded") else ""
+                lines.append(f"• {it['url'][:150]}{tag}")
+            if len(its) > 15:
+                lines.append(f"…+{len(its) - 15} more")
+            emb.description = "\n".join(lines)[:3900]
+            emb.set_footer(text=f"asherin • {bucket} files")
+            try:
+                await chan.send(embed=emb)
+            except discord.HTTPException:
+                await asyncio.sleep(2)
+            await asyncio.sleep(self._throttle)
+
+    async def _publish_transcript(self, event: dict) -> None:
+        """Post a YouTube transcript (+ thumbnail) into the transcripts channel."""
+        chan = await self._ensure_named_channel(TRANSCRIPTS_CHANNEL, YOUTUBE_CATEGORY)
+        if chan is None:
+            return
+        transcript = (event.get("transcript") or "").strip()
+        vid = event.get("video_id")
+        url = (f"https://www.youtube.com/watch?v={vid}" if vid
+               else event.get("page_url"))
+        emb = discord.Embed(
+            title=f"🎬 {event.get('title') or vid or 'video'}"[:250],
+            url=url, color=0xc0392b)
+        if event.get("thumbnail"):
+            emb.set_thumbnail(url=event["thumbnail"])
+        emb.add_field(name="Video", value=url or "-", inline=False)
+        emb.add_field(name="Transcript", value=f"{len(transcript)} chars", inline=True)
+        if event.get("lang"):
+            emb.add_field(name="Lang", value=str(event["lang"])[:10], inline=True)
+        emb.description = transcript[:1500] + ("…" if len(transcript) > 1500 else "")
+        try:
+            if len(transcript) > 1500:
+                import io
+                fname = f"transcript_{vid or 'video'}.txt"
+                fh = discord.File(io.BytesIO(transcript.encode("utf-8")), filename=fname)
+                await chan.send(embed=emb, file=fh)
+            else:
+                await chan.send(embed=emb)
+        except discord.HTTPException:
+            await asyncio.sleep(2)
+
+    async def ensure_media_channels(self) -> dict[str, int]:
+        """Pre-create the media category + per-type channels + transcripts."""
+        mapping: dict[str, int] = {}
+        for name in MEDIA_BUCKET_CHANNELS.values():
+            chan = await self._ensure_named_channel(name, MEDIA_CATEGORY)
+            if chan is not None:
+                mapping[name] = chan.id
+        tchan = await self._ensure_named_channel(TRANSCRIPTS_CHANNEL, YOUTUBE_CATEGORY)
+        if tchan is not None:
+            mapping[TRANSCRIPTS_CHANNEL] = tchan.id
+        return mapping
 
     async def _publish_update(self, event: dict) -> None:
         channel = await self._get_channel(UPDATES_CHANNEL)

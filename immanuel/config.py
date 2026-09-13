@@ -95,7 +95,12 @@ class Config:
     media_store_path: str = "./data/media"
     max_media_bytes: int = 25_000_000    # per-file cap when downloading media
     max_media_per_page: int = 20
-    media_types: set[str] = field(default_factory=lambda: {"image", "audio", "video"})
+    media_types: set[str] = field(default_factory=lambda: {
+        "image", "audio", "video", "document", "archive"})
+    # Publish every file type + youtube transcripts into their own public channels
+    # (works even without downloading bytes — references are still categorized).
+    publish_media: bool = True
+    publish_transcripts: bool = True
     # YouTube: convert videos -> transcripts, import thumbnails (optional deps)
     enable_youtube: bool = True
     youtube_langs: list[str] = field(default_factory=lambda: ["en"])
@@ -171,7 +176,10 @@ class Config:
             media_store_path=os.getenv("MEDIA_STORE_PATH", "./data/media").strip(),
             max_media_bytes=_int("MAX_MEDIA_BYTES", 25_000_000),
             max_media_per_page=_int("MAX_MEDIA_PER_PAGE", 20),
-            media_types=set(_csv("MEDIA_TYPES")) or {"image", "audio", "video"},
+            media_types=set(_csv("MEDIA_TYPES")) or {
+                "image", "audio", "video", "document", "archive"},
+            publish_media=_bool("PUBLISH_MEDIA", True),
+            publish_transcripts=_bool("PUBLISH_TRANSCRIPTS", True),
             enable_youtube=_bool("ENABLE_YOUTUBE", True),
             youtube_langs=_csv("YOUTUBE_LANGS") or ["en"],
             organize_by=(os.getenv("ORGANIZE_BY", "epistemic").strip().lower()

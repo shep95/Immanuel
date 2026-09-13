@@ -368,6 +368,30 @@ def create_bot(db: Database, engine: Engine, config: Config,
             f"Admin-only: `GET {base}/v1/secrets` (exposed keys, masked).",
             ephemeral=True)
 
+    # ---------------------------------------- media + transcript channels
+    @tree.command(
+        name="setup_media_channels",
+        description="Create public per-file-type media channels + a transcripts channel.")
+    async def setup_media_channels(interaction: discord.Interaction) -> None:
+        if not await admin_only(interaction):
+            return
+        if publisher is None:
+            await interaction.response.send_message(
+                "Publishing is disabled for this deployment.", ephemeral=True)
+            return
+        await interaction.response.defer(thinking=True)
+        mapping = await publisher.ensure_media_channels()
+        if not mapping:
+            await interaction.followup.send(
+                "❌ Could not create channels — I need **Manage Channels**.")
+            return
+        names = ", ".join(f"#{n}" for n in mapping)
+        await interaction.followup.send(
+            f"✅ Media channels ready under **📁 asherin media** + "
+            f"**🎬 asherin youtube**: {names}\n"
+            "Images, audio, video, documents, archives, other files, and YouTube "
+            "transcripts get sorted into these as pages are collected.")
+
     # ------------------------------------------------ github tool scout
     @tree.command(
         name="setup_github_channel",

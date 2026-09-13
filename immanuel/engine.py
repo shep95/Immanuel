@@ -221,6 +221,11 @@ class Engine:
                         if cfg.publish_to_discord and res.secrets:
                             self._emit({"kind": "secrets", "url": res.url,
                                         "domain": res.domain, "secrets": res.secrets})
+                        if (cfg.publish_to_discord and (res.is_new_page or res.is_update)):
+                            if getattr(cfg, "publish_media", True) and res.media_items:
+                                self._emit(res.media_event())
+                            if getattr(cfg, "publish_transcripts", True) and res.transcript:
+                                self._emit(res.transcript_event())
                         ok = res.stored or res.unchanged or res.is_new_page or res.is_update
                         self.db.mark_source_crawled(src["id"], ok=ok)
                     except Exception:
