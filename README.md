@@ -118,8 +118,22 @@ With `DEEP_EXTRACT=true` (default) every page is **fully scraped**, not merely l
 
 `engine:auto` (default) uses Strix when it's runnable, otherwise recon. Force with
 `engine:strix` or `engine:recon`. Findings are observational — no exploitation is performed by
-the recon engine, and raw secrets are never stored (only masked values). Admin-only, with API
-endpoints `GET /v1/hack/runs`, `GET /v1/hack/runs/{id}`, and `GET /v1/hack/availability`.
+the recon engine, and raw secrets are never stored (only masked values). API endpoints
+`GET /v1/hack/runs`, `GET /v1/hack/runs/{id}`, and `GET /v1/hack/availability` (admin).
+
+**Bring-your-own key + a private channel per user.** `/hack` opens a **private channel** for the
+caller (under a `🔒 asherin hack` category — only that user and the bot can see it). To run the
+Strix AI engine you **paste your own LLM key into that channel** (`key`, or `provider/model | key`);
+the key is used only for your runs, is **never written to disk**, and the message is deleted after
+it's read. Type `recon` instead to run the keyless deterministic engine. Keys are reused for the
+rest of your session so you don't re-paste each time.
+
+**Pattern Forge thinking architecture.** The AI hacker runs under the Pattern Forge operating
+framework (`HACK_THINKING_ARCH=true`): the five brain files shipped in `immanuel/hack/brains/`
+(pattern-object ontology, universal debugger, narrative → flaw → retarget, response discipline)
+are **mounted read-only into the Strix sandbox** (`skills/patternforge/`) and composed into the
+agent's `--instruction-file`, so the actual files — not a summary — are the operational system for
+every run.
 - **Intel data-report** (`BUILD_INTEL_REPORT=true`) — per page, Immanuel compiles a report of
   the open metadata, the link/media graph, and any secrets found — the raw material for a
   domain-wide **10-way hop** (`MAX_HOPS`) across every connected page and data source.

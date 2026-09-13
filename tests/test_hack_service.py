@@ -75,8 +75,9 @@ async def test_service_auto_falls_back_to_recon(db, tmp_path, monkeypatch):
     # auto + strix not ready -> recon
     import immanuel.hack.service as svcmod
     monkeypatch.setattr(svcmod, "strix_availability",
-                        lambda _c: {"ready": False, "reasons": ["no docker"],
-                                    "strix": False, "docker": False, "llm": False})
+                        lambda _c, **kw: {"ready": False, "reasons": ["no docker"],
+                                          "strix": False, "docker": False,
+                                          "llm": False})
     cfg = _cfg(tmp_path, hack_engine="auto")
     svc = HackService(db, cfg)
     assert svc._choose_engine(None) == "recon"

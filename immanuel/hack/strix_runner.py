@@ -17,17 +17,33 @@ import asyncio
 import json
 import os
 import shutil
+import tempfile
 from pathlib import Path
 
+from .thinking import compose_instruction, workspace_file_specs
 
-def strix_availability(config) -> dict:
-    """What's present for a real Strix run, and what's missing."""
+
+def _effective_model(config, model: str | None = None) -> str:
+    return (model or getattr(config, "strix_llm", "")
+            or os.getenv("STRIX_LLM", "")).strip()
+
+
+def _effective_key(config, api_key: str | None = None) -> str:
+    return (api_key or os.getenv("LLM_API_KEY", "")
+            or os.getenv("STRIX_LLM_API_KEY", "")).strip()
+
+
+def strix_availability(config, *, api_key: str | None = None,
+                       model: str | None = None) -> dict:
+    """What's present for a real Strix run, and what's missing.
+
+    A user-supplied ``api_key`` / ``model`` (bring-your-own-key) counts toward
+    readiness even when the environment has none.
+    """
     strix_bin = getattr(config, "strix_bin", "strix") or "strix"
     has_strix = shutil.which(strix_bin) is not None
     has_docker = shutil.which("docker") is not None
-    llm_model = (getattr(config, "strix_llm", "") or os.getenv("STRIX_LLM", "")).strip()
-    llm_key = (os.getenv("LLM_API_KEY", "") or os.getenv("STRIX_LLM_API_KEY", "")).strip()
-    has_llm = bool(llm_model and llm_key)
+    has_llm = bool(_effective_model(config, model) and _effective_key(config, api_key))
 
     reasons: list[str] = []
     if not has_strix:
@@ -35,14 +51,16 @@ def strix_availability(config) -> dict:
     if not has_docker:
         reasons.append("docker not found on PATH (Strix runs agents in a sandbox)")
     if not has_llm:
-        reasons.append("set STRIX_LLM + LLM_API_KEY (any supported provider)")
+        reasons.append("bring your own LLM key (paste it in your private hack channel)")
     return {
         "strix": has_strix, "docker": has_docker, "llm": has_llm,
         "ready": has_strix and has_docker and has_llm, "reasons": reasons,
     }
 
 
-def build_command(config, target: str, instruction: str | None = None) -> list[str]:
+def build_command(config, target: str, instruction: str | None = None, *,
+                  instruction_file: str | None = None,
+                  workspace_files: list[str] | None = None) -> list[str]:
     """Assemble the non-interactive `strix` invocation."""
     cmd = [getattr(config, "strix_bin", "strix") or "strix",
            "--target", target,
@@ -54,16 +72,25 @@ def build_command(config, target: str, instruction: str | None = None) -> list[s
     turns = getattr(config, "strix_max_turns", 0) or 0
     if turns and turns > 0:
         cmd += ["--max-turns", str(turns)]
-    if instruction:
+    # instruction-file wins over inline instruction (they are mutually exclusive)
+    if instruction_file:
+        cmd += ["--instruction-file", instruction_file]
+    elif instruction:
         cmd += ["--instruction", instruction]
+    for spec in (workspace_files or []):
+        cmd += ["--workspace-file", spec]
     return cmd
 
 
-def _strix_env(config) -> dict:
+def _strix_env(config, *, api_key: str | None = None,
+               model: str | None = None) -> dict:
     env = dict(os.environ)
-    model = (getattr(config, "strix_llm", "") or "").strip()
-    if model and not env.get("STRIX_LLM"):
-        env["STRIX_LLM"] = model
+    m = _effective_model(config, model)
+    if m:
+        env["STRIX_LLM"] = m
+    k = _effective_key(config, api_key)
+    if k:
+        env["LLM_API_KEY"] = k
     return env
 
 
@@ -133,9 +160,16 @@ def parse_run_dir(run_dir: Path | str | None) -> tuple[list[dict], str]:
 
 
 async def run_strix(config, target: str, instruction: str | None = None, *,
+                    api_key: str | None = None, model: str | None = None,
                     on_line=None, timeout: float | None = None) -> dict:
-    """Run Strix non-interactively; return an engine-result dict."""
-    avail = strix_availability(config)
+    """Run Strix non-interactively; return an engine-result dict.
+
+    ``api_key`` / ``model`` are the user's bring-your-own credentials. When the
+    Pattern Forge thinking architecture is enabled, the composed operating
+    framework is written to an instruction file and the brain files are mounted
+    read-only into the sandbox workspace.
+    """
+    avail = strix_availability(config, api_key=api_key, model=model)
     if not avail["ready"]:
         return {"engine": "strix", "status": "unavailable",
                 "findings": [], "reasons": avail["reasons"],
@@ -146,10 +180,23 @@ async def run_strix(config, target: str, instruction: str | None = None, *,
     runs_base = workdir / "strix_runs"
     before = {p.name for p in _run_dirs(runs_base)}
 
-    cmd = build_command(config, target, instruction)
+    use_arch = getattr(config, "hack_thinking_arch", True)
+    instruction_file = None
+    workspace_files = None
+    if use_arch:
+        text = compose_instruction(instruction)
+        fd, instruction_file = tempfile.mkstemp(
+            prefix="hack_instruction_", suffix=".txt", dir=str(workdir))
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(text)
+        workspace_files = workspace_file_specs()
+
+    cmd = build_command(config, target, instruction,
+                        instruction_file=instruction_file,
+                        workspace_files=workspace_files)
     try:
         proc = await asyncio.create_subprocess_exec(
-            *cmd, cwd=str(workdir), env=_strix_env(config),
+            *cmd, cwd=str(workdir), env=_strix_env(config, api_key=api_key, model=model),
             stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT)
     except FileNotFoundError:
         return {"engine": "strix", "status": "unavailable", "findings": [],
@@ -201,4 +248,5 @@ async def run_strix(config, target: str, instruction: str | None = None, *,
         "findings": findings,
         "summary": summary or f"strix exited with code {rc}",
         "log_tail": "\n".join(lines[-40:]),
+        "framework": "pattern-forge" if use_arch else "none",
     }

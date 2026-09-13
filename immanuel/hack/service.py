@@ -29,26 +29,34 @@ class HackService:
             "recon": {"ready": True},  # deterministic engine is always available
         }
 
-    def _choose_engine(self, requested: str | None) -> str:
+    def _choose_engine(self, requested: str | None, *, api_key: str | None = None,
+                       model: str | None = None) -> str:
         engine = (requested or getattr(self.config, "hack_engine", "auto") or "auto").lower()
         if engine == "strix":
             return "strix"
         if engine == "recon":
             return "recon"
         # auto
-        return "strix" if strix_availability(self.config)["ready"] else "recon"
+        ready = strix_availability(self.config, api_key=api_key, model=model)["ready"]
+        return "strix" if ready else "recon"
 
     # --------------------------------------------------------------- run
     async def run(self, target: str, instruction: str | None = None, *,
                   engine: str | None = None, requested_by: str | None = None,
+                  api_key: str | None = None, model: str | None = None,
                   on_line=None) -> dict:
-        """Run a hack against ``target``; persist + return the result dict."""
-        chosen = self._choose_engine(engine)
+        """Run a hack against ``target``; persist + return the result dict.
+
+        ``api_key`` / ``model`` are the user's bring-your-own credentials, used
+        only for the Strix engine and never persisted.
+        """
+        chosen = self._choose_engine(engine, api_key=api_key, model=model)
         run_id = self.db.add_hack_run(target, chosen, instruction, requested_by)
 
         try:
             if chosen == "strix":
                 result = await run_strix(self.config, target, instruction,
+                                         api_key=api_key, model=model,
                                          on_line=on_line)
                 # explicit strix request but not runnable -> honest fallback to recon
                 if result.get("status") == "unavailable" and \
@@ -91,6 +99,7 @@ class HackService:
             f"target: {target}",
             f"engine: {result.get('engine', '?')}",
             f"status: {result.get('status', '?')}",
+            f"thinking architecture: {result.get('framework', 'pattern-forge')}",
             f"summary: {result.get('summary', '')}",
             "",
         ]

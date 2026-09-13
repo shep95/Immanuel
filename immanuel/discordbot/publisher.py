@@ -30,6 +30,8 @@ SECRETS_CHANNEL = "asherin-api-keys"
 GITHUB_CHANNEL = "asherin-github-tools"
 # Private channel for /hack pentest runs (owner + bot only).
 HACK_CHANNEL = "asherin-hack"
+# Category holding one private per-user hack channel each.
+HACK_CATEGORY = "🔒 asherin hack"
 # Category that holds the dynamic per-topic / per-company channels.
 ORGANIZED_CATEGORY = "🗂️ asherin channels"
 # Public media category + one channel per file-type bucket.
@@ -377,6 +379,46 @@ class Publisher:
                 return None
         self._chan_cache[HACK_CHANNEL] = chan.id
         self.db.set_state(f"chan_{HACK_CHANNEL}", str(chan.id))
+        return chan
+
+    async def ensure_user_hack_channel(self, member):
+        """Get-or-create a PRIVATE per-user /hack channel (that user + bot only)."""
+        guild = self._guild()
+        if guild is None:
+            return None
+        state_key = f"hackchan_{member.id}"
+        stored = self.db.get_state(state_key)
+        if stored:
+            chan = guild.get_channel(int(stored))
+            if chan is not None:
+                return chan
+        base = "".join(ch if ch.isalnum() else "-"
+                       for ch in str(getattr(member, "display_name", "user")).lower())
+        base = base.strip("-")[:24] or "user"
+        name = f"hack-{base}-{member.id % 100000}"
+        chan = discord.utils.get(guild.text_channels, name=name)
+        if chan is None:
+            overwrites = {
+                guild.default_role: discord.PermissionOverwrite(view_channel=False),
+                guild.me: discord.PermissionOverwrite(view_channel=True,
+                                                      send_messages=True,
+                                                      manage_messages=True),
+                member: discord.PermissionOverwrite(view_channel=True,
+                                                    send_messages=True),
+            }
+            category = discord.utils.get(guild.categories, name=HACK_CATEGORY)
+            if category is None:
+                try:
+                    category = await guild.create_category(HACK_CATEGORY)
+                except discord.Forbidden:
+                    category = None
+            try:
+                chan = await guild.create_text_channel(
+                    name, overwrites=overwrites, category=category,
+                    topic=f"private /hack workspace for {member} — you + the bot only.")
+            except discord.Forbidden:
+                return None
+        self.db.set_state(state_key, str(chan.id))
         return chan
 
     # ---------------------------------------------- media + transcripts

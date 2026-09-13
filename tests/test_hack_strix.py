@@ -72,3 +72,80 @@ async def test_run_strix_unavailable(monkeypatch):
     assert out["status"] == "unavailable"
     assert out["findings"] == []
     assert out["reasons"]
+
+
+class _FakeStdout:
+    def __init__(self, lines):
+        self._lines = [l.encode() for l in lines]
+
+    def __aiter__(self):
+        async def _gen():
+            for l in self._lines:
+                yield l
+        return _gen()
+
+
+class _FakeProc:
+    def __init__(self, cwd):
+        self.stdout = _FakeStdout(["strix booting", "scan complete"])
+        self.returncode = 0
+        self._cwd = cwd
+
+    async def wait(self):
+        from pathlib import Path
+        run = Path(self._cwd) / "strix_runs" / "run-xyz"
+        run.mkdir(parents=True, exist_ok=True)
+        (run / "run.json").write_text('{"status": "finished"}')
+        (run / "v.json").write_text(
+            '{"vulnerabilities": [{"title": "IDOR", "severity": "high"}]}')
+        return 0
+
+    def kill(self):
+        pass
+
+
+@pytest.mark.asyncio
+async def test_run_strix_injects_byo_key_and_mounts_brains(tmp_path, monkeypatch):
+    # strix + docker "present"
+    monkeypatch.setattr(sr.shutil, "which", lambda name: f"/usr/bin/{name}")
+    captured = {}
+
+    async def _fake_exec(*cmd, cwd=None, env=None, stdout=None, stderr=None):
+        captured["cmd"] = list(cmd)
+        captured["env"] = env
+        return _FakeProc(cwd)
+
+    monkeypatch.setattr(sr.asyncio, "create_subprocess_exec", _fake_exec)
+
+    out = await sr.run_strix(
+        _cfg(hack_runs_path=str(tmp_path)), "https://ex.com",
+        instruction="focus on auth", api_key="sk-user-123", model="prov/model-x")
+
+    assert out["status"] == "completed"
+    assert out["framework"] == "pattern-forge"
+    assert any(f["title"] == "IDOR" for f in out["findings"])
+    # bring-your-own key + model landed in the child env
+    assert captured["env"]["LLM_API_KEY"] == "sk-user-123"
+    assert captured["env"]["STRIX_LLM"] == "prov/model-x"
+    # thinking architecture => instruction-file + mounted brain files
+    assert "--instruction-file" in captured["cmd"]
+    assert captured["cmd"].count("--workspace-file") == 5
+    assert "--target" in captured["cmd"] and "https://ex.com" in captured["cmd"]
+
+
+@pytest.mark.asyncio
+async def test_run_strix_no_arch_uses_inline_instruction(tmp_path, monkeypatch):
+    monkeypatch.setattr(sr.shutil, "which", lambda name: f"/usr/bin/{name}")
+    captured = {}
+
+    async def _fake_exec(*cmd, cwd=None, env=None, stdout=None, stderr=None):
+        captured["cmd"] = list(cmd)
+        return _FakeProc(cwd)
+
+    monkeypatch.setattr(sr.asyncio, "create_subprocess_exec", _fake_exec)
+    await sr.run_strix(
+        _cfg(hack_runs_path=str(tmp_path), hack_thinking_arch=False),
+        "ex.com", instruction="only headers", api_key="k", model="m")
+    assert "--instruction-file" not in captured["cmd"]
+    assert "--workspace-file" not in captured["cmd"]
+    assert captured["cmd"][captured["cmd"].index("--instruction") + 1] == "only headers"

@@ -33,11 +33,15 @@ def create_bot(db: Database, engine: Engine, config: Config,
                hack=None) -> commands.Bot:
     intents = discord.Intents.default()
     intents.members = True  # required for join/leave logging (enable in dev portal)
+    intents.message_content = True  # read pasted BYO api keys in /hack channels
 
     bot = commands.Bot(command_prefix="!", intents=intents)
     tree = bot.tree
     publisher = Publisher(bot, db, config) if publish_queue is not None else None
     bot._immanuel_publisher_started = False
+    # /hack bring-your-own-key state (in-memory only — keys are never persisted)
+    bot._hack_pending: dict[int, dict] = {}   # channel_id -> pending request
+    bot._hack_keys: dict[int, tuple] = {}      # user_id -> (model, key)
 
     async def admin_only(interaction: discord.Interaction) -> bool:
         if _is_admin(interaction, config):
@@ -463,9 +467,40 @@ def create_bot(db: Database, engine: Engine, config: Config,
             emb.set_footer(text=f"+{len(findings) - 10} more findings — see report")
         return emb
 
+    async def _run_hack_to_channel(channel, user, target, instruction, engine,
+                                   api_key=None, model=None) -> None:
+        """Run a /hack job and post the report into the user's private channel."""
+        try:
+            await channel.send(f"⏳ running /hack on `{target}` "
+                               f"({engine or config.hack_engine})…")
+        except Exception:
+            pass
+        try:
+            result = await hack.run(target, instruction, engine=engine,
+                                    requested_by=str(user), api_key=api_key,
+                                    model=model)
+        except Exception as exc:  # pragma: no cover - safety net
+            try:
+                await channel.send(f"❌ /hack `{target}` crashed: {exc}")
+            except Exception:
+                pass
+            return
+        emb = _hack_embed(result, target)
+        rp = result.get("report_path")
+        file = None
+        if rp:
+            try:
+                file = discord.File(rp)
+            except Exception:
+                file = None
+        try:
+            await channel.send(embed=emb, file=file)
+        except Exception:
+            pass
+
     @tree.command(
         name="hack",
-        description="Run an AI pentest (Strix) or deterministic recon on a target.")
+        description="Run an AI pentest (Strix) or deterministic recon in your private channel.")
     @app_commands.describe(
         target="URL, domain, IP, or repo to test",
         instruction="optional focus, e.g. 'check auth and IDOR'",
@@ -473,11 +508,14 @@ def create_bot(db: Database, engine: Engine, config: Config,
     async def hack_cmd(interaction: discord.Interaction, target: str,
                        instruction: str | None = None,
                        engine: str | None = None) -> None:
-        if not await admin_only(interaction):
-            return
         if hack is None or not config.enable_hack:
             await interaction.response.send_message(
                 "⛔ /hack is disabled for this deployment.", ephemeral=True)
+            return
+        if interaction.guild is None or publisher is None:
+            await interaction.response.send_message(
+                "❌ Use /hack inside a server (it opens a private channel for you).",
+                ephemeral=True)
             return
         target = (target or "").strip()
         if not target:
@@ -491,49 +529,82 @@ def create_bot(db: Database, engine: Engine, config: Config,
             return
 
         await interaction.response.defer(thinking=True, ephemeral=True)
-        hack_chan = await publisher.ensure_hack_channel() if publisher else None
-        avail = await asyncio.to_thread(hack.availability)
-        strix_ready = avail["strix"]["ready"]
-        picked = engine or config.hack_engine
-        if picked == "auto":
-            picked = "strix" if strix_ready else "recon"
-
-        async def _job() -> None:
-            try:
-                result = await hack.run(target, instruction, engine=engine,
-                                        requested_by=str(interaction.user))
-            except Exception as exc:  # pragma: no cover - safety net
-                if hack_chan is not None:
-                    await hack_chan.send(f"❌ /hack {target} crashed: {exc}")
-                return
-            emb = _hack_embed(result, target)
-            rp = result.get("report_path")
-            file = None
-            if rp:
-                try:
-                    file = discord.File(rp)
-                except Exception:
-                    file = None
-            if hack_chan is not None:
-                await hack_chan.send(embed=emb, file=file)
-            else:
-                await post_admin_log(
-                    interaction.guild,
-                    f"/hack {target}: {result.get('status')} — "
-                    f"{result.get('summary')}")
-
-        asyncio.create_task(_job())
-
-        note = ("🧠 **Strix** AI agents (docker sandbox)" if picked == "strix"
-                else "🔎 **recon** (deterministic, non-AI)")
-        if picked == "strix" and not strix_ready:
-            note += ("\n_note: strix isn't runnable here (" +
-                     "; ".join(avail["strix"]["reasons"]) + ") — it will fall "
-                     "back to recon if you used auto._")
-        where = hack_chan.mention if hack_chan is not None else "the admin log"
+        chan = await publisher.ensure_user_hack_channel(interaction.user)
+        if chan is None:
+            await interaction.followup.send(
+                "❌ Could not open your private channel — I need **Manage Channels**.")
+            return
         await interaction.followup.send(
-            f"▶️ started /hack on `{target}` using {note}\n"
-            f"results will post to {where} when the run finishes.")
+            f"🔒 opened your private hack channel: {chan.mention} — continue there.")
+
+        picked = engine or config.hack_engine
+        stored = bot._hack_keys.get(interaction.user.id)
+
+        # recon needs no key — run it right away
+        if picked == "recon":
+            asyncio.create_task(_run_hack_to_channel(
+                chan, interaction.user, target, instruction, "recon"))
+            return
+
+        # strix / auto: reuse a key already brought this session, else ask for one
+        if stored:
+            model, key = stored
+            asyncio.create_task(_run_hack_to_channel(
+                chan, interaction.user, target, instruction, engine,
+                api_key=key, model=model))
+            return
+
+        bot._hack_pending[chan.id] = {
+            "user_id": interaction.user.id, "target": target,
+            "instruction": instruction, "engine": engine}
+        model_hint = config.strix_llm or "openrouter/z-ai/glm-5.3"
+        await chan.send(
+            f"🛡️ **/hack `{target}`** — bring your own LLM key to run the Strix AI "
+            f"agents.\n\n**paste your key here** in one of these forms:\n"
+            f"• `your-api-key` (uses model `{model_hint}`)\n"
+            f"• `provider/model | your-api-key` (choose the model)\n\n"
+            f"…or type **recon** to run the keyless deterministic engine instead.\n"
+            f"_your key is used only for your runs, never stored to disk, and I'll "
+            f"delete the message after reading it._")
+
+    @bot.event
+    async def on_message(message: discord.Message) -> None:
+        # capture a bring-your-own-key reply in a private hack channel
+        pending = bot._hack_pending.get(getattr(message.channel, "id", 0))
+        if (pending and not message.author.bot
+                and message.author.id == pending["user_id"] and hack is not None):
+            content = (message.content or "").strip()
+            bot._hack_pending.pop(message.channel.id, None)
+            if content.lower() in ("recon", "skip", "keyless", "no", "no key"):
+                asyncio.create_task(_run_hack_to_channel(
+                    message.channel, message.author, pending["target"],
+                    pending["instruction"], "recon"))
+                return
+            # parse "model | key" | "model key" | "key"
+            model = config.strix_llm or ""
+            key = content
+            if "|" in content:
+                left, _, right = content.partition("|")
+                model, key = left.strip(), right.strip()
+            elif " " in content and "/" in content.split(" ", 1)[0]:
+                left, _, right = content.partition(" ")
+                model, key = left.strip(), right.strip()
+            if not model:
+                model = "openrouter/z-ai/glm-5.3"
+            bot._hack_keys[message.author.id] = (model, key)
+            try:
+                await message.delete()
+            except Exception:
+                pass
+            await message.channel.send(
+                f"✅ key received (model `{model}`) — starting the run. "
+                "future /hack runs this session reuse it automatically.")
+            asyncio.create_task(_run_hack_to_channel(
+                message.channel, message.author, pending["target"],
+                pending["instruction"], pending["engine"],
+                api_key=key, model=model))
+            return
+        await bot.process_commands(message)
 
     @tree.command(
         name="setup_hack_channel",

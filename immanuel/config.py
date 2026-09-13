@@ -149,6 +149,9 @@ class Config:
     hack_runs_path: str = "./data/hack"  # strix_runs/ + downloadable reports land here
     hack_max_recon_pages: int = 25       # recon fallback page budget
     hack_recon_hops: int = 1             # recon fallback same-host hop depth
+    # Pattern Forge thinking architecture: mount the brain files into the sandbox
+    # + compose them into the AI hacker's operating-framework instruction.
+    hack_thinking_arch: bool = True
 
     @classmethod
     def from_env(cls) -> "Config":
@@ -237,4 +240,5 @@ class Config:
             hack_runs_path=os.getenv("HACK_RUNS_PATH", "./data/hack").strip(),
             hack_max_recon_pages=_int("HACK_MAX_RECON_PAGES", 25),
             hack_recon_hops=_int("HACK_RECON_HOPS", 1),
+            hack_thinking_arch=_bool("HACK_THINKING_ARCH", True),
         )
