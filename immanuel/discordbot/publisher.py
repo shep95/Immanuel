@@ -254,15 +254,23 @@ class Publisher:
         emb.add_field(name="Company", value=str(company or "unknown")[:100], inline=True)
         emb.add_field(name="Host", value=str(event.get("domain") or "-")[:100], inline=True)
         emb.add_field(name="Page", value=(event.get("url") or "-")[:200], inline=False)
+        any_raw = False
         for s in findings[:15]:
-            # secret -> what kind -> what data it was sitting in
+            # secret -> provider/what it unlocks -> the value -> the data around it
+            value = s.get("raw") or s.get("masked")
+            if s.get("raw"):
+                any_raw = True
             emb.add_field(
-                name=f"{s.get('severity','?')} · {s.get('type')}",
-                value=f"secret: `{s.get('masked')}`\n"
-                      f"data: {(s.get('context') or 'n/a')[:180]}",
+                name=f"{s.get('severity','?')} · {s.get('type')} "
+                     f"({s.get('provider','?')})",
+                value=f"secret: `{value}`\n"
+                      f"unlocks: {s.get('unlocks', 'n/a')}\n"
+                      f"data: {(s.get('context') or 'n/a')[:160]}",
                 inline=False,
             )
-        emb.set_footer(text="asherin • admin only • values masked; raw secret never stored")
+        emb.set_footer(text=("asherin • admin only • UNCENSORED values shown"
+                             if any_raw else
+                             "asherin • admin only • values masked"))
         try:
             await channel.send(embed=emb)
         except discord.HTTPException:

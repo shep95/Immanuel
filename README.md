@@ -85,10 +85,16 @@ With `DEEP_EXTRACT=true` (default) every page is **fully scraped**, not merely l
 - **Text + full metadata + code** — all `<meta>` tags, OpenGraph/Twitter cards, JSON-LD,
   `lang`, and code assets (script/stylesheet/inline JSON-LD) are captured per item.
 - **Exposed API keys / secrets** (`SCAN_SECRETS=true`) — a deterministic (regex + entropy)
-  scanner flags secrets left in public page source. Findings are **masked** (raw value is
-  never stored — only a sha256 fingerprint + preview) and routed to a **private admin-only**
-  `#asherin-api-keys` channel (`/setup_secrets_channel`). Read them via `GET /v1/secrets`
-  with an **admin** key (`/adminkey`).
+  scanner flags secrets left in public page source. Each finding is enriched with the
+  **provider** and **what data that key class would unlock**, plus the **company** and the
+  surrounding data context, and routed to a **private admin-only** `#asherin-api-keys` channel
+  (`/setup_secrets_channel`). Read them via `GET /v1/secrets` with an **admin** key (`/adminkey`).
+  - By default the value is **masked** (only a sha256 fingerprint + preview is kept).
+  - Set `SECRETS_UNCENSORED=true` to keep + show the **full uncensored value** on admin-only
+    surfaces (channel, `/secrets`, `/v1/secrets`). This is a data-handling choice for the
+    owner's own private ledger — **Immanuel never *uses* a found key** (no authenticating to
+    third-party services with leaked credentials; that would be unauthorized access). The
+    "connect a key to its data" is done passively via the provider + scope mapping above.
 - **Media → its own public categories** (`PUBLISH_MEDIA=true`, default) — **every file type**
   found on a page (images, audio, video, documents/pdf/docx/csv, archives/zip, other) is sorted
   into its own channel under a **📁 asherin media** category (`media-images`, `media-audio`,

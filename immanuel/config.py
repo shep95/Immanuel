@@ -99,6 +99,10 @@ class Config:
     # --- Deep acquisition (scrape text + metadata + code + media, not just links) ---
     deep_extract: bool = True            # capture full page metadata + code assets
     scan_secrets: bool = True            # detect exposed API keys / tokens on public pages
+    # Store + show the UNCENSORED key value (admin-only surfaces only). Off by
+    # default -> masked value + fingerprint. This never uses the key; it only
+    # keeps the full value in the owner's private admin ledger/channel.
+    secrets_uncensored: bool = False
     build_intel_report: bool = True      # aggregate open metadata into an intel report
 
     # --- Media download & import (download files, not just reference them) ---
@@ -201,6 +205,7 @@ class Config:
             wayback_max_snapshots=_int("WAYBACK_MAX_SNAPSHOTS", 25),
             deep_extract=_bool("DEEP_EXTRACT", True),
             scan_secrets=_bool("SCAN_SECRETS", True),
+            secrets_uncensored=_bool("SECRETS_UNCENSORED", False),
             build_intel_report=_bool("BUILD_INTEL_REPORT", True),
             download_media=_bool("DOWNLOAD_MEDIA", False),
             media_store_path=os.getenv("MEDIA_STORE_PATH", "./data/media").strip(),

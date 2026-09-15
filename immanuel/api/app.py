@@ -136,11 +136,25 @@ def create_app(db: Database, engine: Any = None, forge: Any = None,
             "by_category": db.github_category_counts()}
         return {"count": len(rows), "scout": snap, "tools": rows}
 
-    # ---- exposed secrets (ADMIN ONLY; values are masked) -----------------
+    # ---- exposed secrets (ADMIN ONLY) ------------------------------------
+    # Values are masked unless SECRETS_UNCENSORED is on, in which case the full
+    # uncensored value is returned (admin scope only). Each finding is enriched
+    # with the provider + what data that key class would unlock.
     @app.get("/v1/secrets")
     def secrets(_: dict = Depends(require_admin),
                 limit: int = Query(default=50, ge=1, le=200)) -> dict:
-        return {"count": db.count_secrets(), "findings": db.recent_secrets(limit)}
+        from ..crawler.secrets import provider_info
+        cfg = getattr(engine, "config", None)
+        uncensored = bool(getattr(cfg, "secrets_uncensored", False))
+        rows = db.recent_secrets(limit)
+        for r in rows:
+            provider, unlocks = provider_info(r.get("secret_type", ""))
+            r["provider"] = provider
+            r["unlocks"] = unlocks
+            if not uncensored:
+                r.pop("secret_raw", None)
+        return {"count": db.count_secrets(), "uncensored": uncensored,
+                "findings": rows}
 
     # ---- /hack runs (ADMIN ONLY) -----------------------------------------
     @app.get("/v1/hack/availability")

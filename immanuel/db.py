@@ -241,6 +241,8 @@ _ITEM_MIGRATIONS = {
 _TABLE_MIGRATIONS = {
     "secrets_found": {
         "company": "ALTER TABLE secrets_found ADD COLUMN company TEXT",
+        # uncensored value — only written when SECRETS_UNCENSORED is on; admin-only
+        "secret_raw": "ALTER TABLE secrets_found ADD COLUMN secret_raw TEXT",
     },
 }
 
@@ -676,16 +678,17 @@ class Database:
     # --------------------------------------------------------- secrets_found
     def add_secret(self, url: str, domain: str | None, secret_type: str,
                    masked: str, fingerprint: str, context: str | None,
-                   severity: str = "medium", company: str | None = None) -> bool:
+                   severity: str = "medium", company: str | None = None,
+                   raw: str | None = None) -> bool:
         with self._lock:
             try:
                 self._conn.execute(
                     """INSERT INTO secrets_found
                        (url, domain, company, secret_type, masked, fingerprint,
-                        context, severity, found_at)
-                       VALUES (?,?,?,?,?,?,?,?,?)""",
+                        context, severity, found_at, secret_raw)
+                       VALUES (?,?,?,?,?,?,?,?,?,?)""",
                     (url, domain, company, secret_type, masked, fingerprint,
-                     (context or "")[:400], severity, time.time()),
+                     (context or "")[:400], severity, time.time(), raw),
                 )
                 self._conn.commit()
                 return True

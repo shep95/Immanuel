@@ -129,6 +129,7 @@ async def recon(config, target: str, *, fetcher=None, robots=None,
     pages: list[dict] = []
     tech: dict = {}
     final_url = url
+    uncensored = getattr(config, "secrets_uncensored", False)
 
     try:
         await _emit(f"recon: fetching {url}")
@@ -145,8 +146,8 @@ async def recon(config, target: str, *, fetcher=None, robots=None,
             # secret scan on visible body + inline code snippets
             blob = ex.text + "\n" + "\n".join(
                 c.get("snippet", "") for c in ex.code if c.get("snippet"))
-            for s in scan_secrets(blob):
-                d = s.as_dict()
+            for s in scan_secrets(blob, keep_raw=uncensored):
+                d = s.as_dict(include_raw=uncensored)
                 if d["fingerprint"] in secrets_seen:
                     continue
                 secrets_seen.add(d["fingerprint"])
@@ -174,8 +175,8 @@ async def recon(config, target: str, *, fetcher=None, robots=None,
                     if not r.ok or not r.body:
                         continue
                     px = extract(r.final_url or link, r.content_type, r.body)
-                    for s in scan_secrets(px.text):
-                        d = s.as_dict()
+                    for s in scan_secrets(px.text, keep_raw=uncensored):
+                        d = s.as_dict(include_raw=uncensored)
                         if d["fingerprint"] in secrets_seen:
                             continue
                         secrets_seen.add(d["fingerprint"])
@@ -206,9 +207,12 @@ async def recon(config, target: str, *, fetcher=None, robots=None,
         findings.append({
             "severity": d.get("severity") or "high",
             "kind": "exposed-secret",
-            "title": f"Exposed secret: {d['type']}",
+            "title": f"Exposed secret: {d['type']} ({d.get('provider', '?')})",
             "detail": d.get("context", ""),
+            "provider": d.get("provider"),
+            "unlocks": d.get("unlocks"),
             "masked": d.get("masked"),
+            "raw": d.get("raw"),          # present only when SECRETS_UNCENSORED
             "page": d.get("page", final_url),
         })
 

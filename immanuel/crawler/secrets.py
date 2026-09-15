@@ -53,6 +53,43 @@ _RULES: list[tuple[str, str, re.Pattern[str]]] = [
      re.compile(r"(?i)\b(?:api[_-]?key|apikey|secret|access[_-]?token|auth[_-]?token|client[_-]?secret)\b\s*[=:]\s*['\"]([A-Za-z0-9\-_./+=]{16,})['\"]")),
 ]
 
+# What each key class unlocks — static knowledge, so we can tell the admin
+# "this leaked key is company X's and would expose Y" WITHOUT ever sending the
+# key anywhere. This is the safe "connect the key to the data" intelligence.
+_PROVIDER_INFO: dict[str, tuple[str, str]] = {
+    "aws_access_key_id": ("AWS", "s3/ec2/iam and anything the key's IAM policy allows"),
+    "aws_secret_access_key": ("AWS", "paired secret for an AWS access key"),
+    "google_api_key": ("Google", "maps/places/other google apis the key is scoped to"),
+    "google_oauth_client": ("Google", "oauth client identity for a google app"),
+    "gcp_service_account": ("Google Cloud", "gcp resources the service account can reach"),
+    "stripe_secret_key": ("Stripe", "payments, customers, charges, payouts"),
+    "stripe_restricted_key": ("Stripe", "scoped stripe resources per the restricted key"),
+    "github_pat": ("GitHub", "private repos + org data per the token scope"),
+    "github_fine_grained_pat": ("GitHub", "scoped repos/org data per the fine-grained token"),
+    "github_oauth": ("GitHub", "github account data per the oauth scope"),
+    "slack_token": ("Slack", "workspace messages, files, users"),
+    "slack_webhook": ("Slack", "post messages into a slack channel"),
+    "discord_bot_token": ("Discord", "control a bot: read/post in its servers"),
+    "discord_webhook": ("Discord", "post messages into a discord channel"),
+    "twilio_account_sid": ("Twilio", "sms/voice, phone numbers, billing"),
+    "sendgrid_key": ("SendGrid", "send email + contacts"),
+    "openai_key": ("OpenAI", "llm api usage billed to the owner"),
+    "openai_project_key": ("OpenAI", "project-scoped llm api usage billed to the owner"),
+    "anthropic_key": ("Anthropic", "llm api usage billed to the owner"),
+    "mailgun_key": ("Mailgun", "send email + logs"),
+    "jwt": ("JWT", "a session/identity per its claims"),
+    "private_key_block": ("PKI", "tls/ssh identity: decrypt or sign as the owner"),
+    "db_connection_string": ("Database", "direct read/write access to the database"),
+    "basic_auth_url": ("HTTP Basic", "the endpoint the embedded credentials authenticate"),
+    "bearer_token": ("Bearer", "the api the bearer token authenticates"),
+    "generic_api_key_assignment": ("Generic", "the service this api key/secret authenticates"),
+}
+
+
+def provider_info(secret_type: str) -> tuple[str, str]:
+    return _PROVIDER_INFO.get(secret_type, ("Unknown", "an unidentified service"))
+
+
 # Substrings that mark an obvious placeholder / example -> ignored (low noise).
 _PLACEHOLDERS = (
     "your_", "example", "changeme", "xxxx", "0000000000", "placeholder",
@@ -68,15 +105,29 @@ class Secret:
     fingerprint: str
     context: str
     severity: str
+    raw: str | None = None          # uncensored value; only set when kept
 
-    def as_dict(self) -> dict:
-        return {
+    @property
+    def provider(self) -> str:
+        return provider_info(self.secret_type)[0]
+
+    @property
+    def unlocks(self) -> str:
+        return provider_info(self.secret_type)[1]
+
+    def as_dict(self, *, include_raw: bool = False) -> dict:
+        d = {
             "type": self.secret_type,
             "masked": self.masked,
             "fingerprint": self.fingerprint,
             "context": self.context,
             "severity": self.severity,
+            "provider": self.provider,
+            "unlocks": self.unlocks,
         }
+        if include_raw and self.raw is not None:
+            d["raw"] = self.raw
+        return d
 
 
 def _entropy(s: str) -> float:
@@ -105,8 +156,14 @@ def _looks_placeholder(raw: str) -> bool:
     return any(p in low for p in _PLACEHOLDERS)
 
 
-def scan_secrets(text: str, *, max_findings: int = 50) -> list[Secret]:
-    """Return de-duplicated exposed-secret findings in ``text`` (deterministic)."""
+def scan_secrets(text: str, *, max_findings: int = 50,
+                 keep_raw: bool = False) -> list[Secret]:
+    """Return de-duplicated exposed-secret findings in ``text`` (deterministic).
+
+    ``keep_raw`` retains the uncensored value on ``Secret.raw`` so an admin-only
+    surface can show it. Off by default: the masked value is always what's used
+    for context and any non-admin path.
+    """
     if not text:
         return []
     findings: list[Secret] = []
@@ -130,9 +187,11 @@ def scan_secrets(text: str, *, max_findings: int = 50) -> list[Secret]:
             start = max(0, m.start() - 30)
             end = min(len(text), m.end() + 20)
             ctx = re.sub(r"\s+", " ", text[start:end]).strip()
-            # scrub the raw secret out of the stored context
+            # scrub the raw secret out of the stored context (context stays masked
+            # even when uncensored storage is on; the raw value lives in .raw)
             ctx = ctx.replace(raw, _mask(raw))
-            findings.append(Secret(name, _mask(raw), fp, ctx[:200], severity))
+            findings.append(Secret(name, _mask(raw), fp, ctx[:200], severity,
+                                   raw=raw if keep_raw else None))
             if len(findings) >= max_findings:
                 return findings
     return findings

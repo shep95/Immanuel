@@ -177,12 +177,13 @@ async def process_url(
         company = company_for(final_url, ex.meta)
         topic, _hits = topic_for(ex.title, ex.text, ex.meta)
         if getattr(config, "scan_secrets", False):
+            uncensored = getattr(config, "secrets_uncensored", False)
             blob = ex.text + "\n" + "\n".join(
                 c.get("snippet", "") for c in ex.code if c.get("snippet"))
-            for s in scan_secrets(blob):
-                d = s.as_dict()
+            for s in scan_secrets(blob, keep_raw=uncensored):
+                d = s.as_dict(include_raw=uncensored)
                 # tag each finding with the company + host it leaked from, so the
-                # admin surface can show: secret -> company -> what data
+                # admin surface can show: secret -> provider -> company -> data
                 d["company"] = company
                 d["domain"] = domain
                 secrets_found.append(d)
@@ -248,7 +249,7 @@ async def process_url(
         for s in secrets_found:
             db.add_secret(final_url, domain, s["type"], s["masked"],
                           s["fingerprint"], s["context"], s["severity"],
-                          company=company)
+                          company=company, raw=s.get("raw"))
 
     # --- discovery (links + subdomains as future sources) -------------------
     discovered = 0

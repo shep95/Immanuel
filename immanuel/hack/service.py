@@ -119,7 +119,12 @@ class HackService:
             detail = f.get("detail") or ""
             if detail:
                 lines.append(f"       {detail[:300]}")
-            if f.get("masked"):
+            if f.get("provider") or f.get("unlocks"):
+                lines.append(f"       provider: {f.get('provider', '?')} — "
+                             f"unlocks: {f.get('unlocks', '?')}")
+            if f.get("raw"):
+                lines.append(f"       secret(UNCENSORED): {f['raw']}")
+            elif f.get("masked"):
                 lines.append(f"       secret(masked): {f['masked']}")
             if f.get("page"):
                 lines.append(f"       page: {f['page']}")

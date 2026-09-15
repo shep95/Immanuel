@@ -348,15 +348,22 @@ def create_bot(db: Database, engine: Engine, config: Config,
             await interaction.followup.send("No exposed secrets found yet.",
                                             ephemeral=True)
             return
+        from ..crawler.secrets import provider_info
+        uncensored = getattr(config, "secrets_uncensored", False)
         emb = discord.Embed(
             title="🔐 Exposed secrets (admin only)",
-            description=f"{db.count_secrets()} total • values masked",
+            description=f"{db.count_secrets()} total • "
+                        + ("UNCENSORED values" if uncensored else "values masked"),
             color=0xc0392b)
         for r in rows[:15]:
+            provider, unlocks = provider_info(r.get("secret_type", ""))
+            value = r.get("secret_raw") or r["masked"]
             emb.add_field(
-                name=f'{r["secret_type"]} — {r.get("company") or r.get("domain") or "?"}',
-                value=f'secret: `{r["masked"]}`\n'
-                      f'data: {(r.get("context") or "n/a")[:150]}\n'
+                name=f'{r["secret_type"]} ({provider}) — '
+                     f'{r.get("company") or r.get("domain") or "?"}',
+                value=f'secret: `{value}`\n'
+                      f'unlocks: {unlocks}\n'
+                      f'data: {(r.get("context") or "n/a")[:130]}\n'
                       f'{r["url"][:120]}',
                 inline=False)
         await interaction.followup.send(embed=emb, ephemeral=True)
